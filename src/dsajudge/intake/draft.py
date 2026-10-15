@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,10 +20,14 @@ from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from dsajudge.gen.validator import validate_args
+from dsajudge.gen.validator import validate_args, validate_ops
 from dsajudge.intake.transcribe import UNREADABLE
 from dsajudge.model.canon import dumps
-from dsajudge.model.constraints import ConstraintError, parse_constraints
+from dsajudge.model.constraints import (
+    ConstraintError,
+    parse_constraints,
+    parse_design_constraints,
+)
 from dsajudge.model.loader import ProblemError, format_validation_error, read_yaml
 from dsajudge.model.schema import Problem
 
@@ -143,25 +148,49 @@ def examine(problem_dir: Path, first_new_part: int = 1) -> tuple[Findings, Probl
         pid = part.id
         f.checklist.append("")
         f.checklist.append(f"--- part {pid}: {part.title} ---")
-        sig = part.sig
-        f.checklist.append(
-            f"[ ] signature: {sig.method}({', '.join(f'{p.name}: {p.type}' for p in sig.params)})"
-            f" -> {sig.returns}"
-        )
-        specs = None
-        try:
-            specs = parse_constraints(part)
-        except ConstraintError as e:
-            f.errors.append(f"part {pid}: {e}")
-        if specs is not None:
-            for s in specs:
-                f.checklist.append(f"[ ] constraint {s.name}: {_bounds(s)}")
+        validate: Callable[[list[Any]], list[str]] | None = None
+        if part.mode == "ops":
+            d = part.dsg
+            ctor = ", ".join(f"{p.name}: {p.type}" for p in d.constructor)
+            f.checklist.append(
+                f"[ ] design: {d.class_name}({ctor}); methods "
+                + ", ".join(
+                    f"{m.name}({', '.join(f'{p.name}: {p.type}' for p in m.params)}) -> {m.returns}"
+                    for m in d.methods
+                )
+            )
+            try:
+                ops_specs = parse_design_constraints(part)
+                f.checklist.append(f"[ ] calls: {_fmt_bound(ops_specs.calls)}")
+                for s in ops_specs.ctor:
+                    f.checklist.append(f"[ ] constructor {s.name}: {_bounds(s)}")
+                for name, ps in ops_specs.methods.items():
+                    for s in ps:
+                        f.checklist.append(f"[ ] {name}.{s.name}: {_bounds(s)}")
+                validate = lambda a, sp=ops_specs: validate_ops(sp, a)  # noqa: E731
+            except ConstraintError as e:
+                f.errors.append(f"part {pid}: {e}")
+        else:
+            sig = part.sig
+            f.checklist.append(
+                f"[ ] signature: {sig.method}"
+                f"({', '.join(f'{p.name}: {p.type}' for p in sig.params)}) -> {sig.returns}"
+            )
+            specs = None
+            try:
+                specs = parse_constraints(part)
+            except ConstraintError as e:
+                f.errors.append(f"part {pid}: {e}")
+            if specs is not None:
+                for s in specs:
+                    f.checklist.append(f"[ ] constraint {s.name}: {_bounds(s)}")
+                validate = lambda a, sp=specs: validate_args(sp, a)  # noqa: E731
         for i, smp in enumerate(part.samples, 1):
             f.checklist.append(
                 f"[ ] sample {i}: {dumps(smp.args)[:70]} -> {dumps(smp.expected)[:40]}"
             )
-            if specs is not None:
-                errs = validate_args(specs, smp.args)
+            if validate is not None:
+                errs = validate(smp.args)
                 if errs:
                     f.errors.append(f"part {pid} sample {i} breaks the constraints: {errs[0]}")
         if not part.samples:

@@ -1,0 +1,42 @@
+# PUBLIC FIXTURE: a classic design problem, statement written in our own words.
+# Exercises mode: ops (docs/CONSTRAINTS.md, "Design problems"): a class with void and
+# value-returning methods, counters that keep pop/top/getMin legal, and three refs
+# (C++, Java, Python) that must agree through their drivers.
+schema: 1
+slug: min-stack
+title: Stack with a constant-time minimum
+tags: [design, stack]
+source: public-fixture
+
+parts:
+  - id: 1
+    title: Min stack
+    statement: part1/statement.md
+    mode: ops
+    design:
+      class: MinStack
+      counters: {size: 0}
+      methods:
+        - {name: push, params: [{name: val, type: int}], effects: {size: 1}}
+        - {name: pop, requires: {size: 1}, effects: {size: -1}}
+        - {name: top, returns: int, requires: {size: 1}}
+        - {name: getMin, returns: int, requires: {size: 1}}
+    constraints:
+      calls: {len: [1, 1e5], mix: {push: 3, pop: 1, top: 1, getMin: 6}}
+      push: {val: {range: [-1e4, 1e4]}}
+    samples:
+      - args:
+          - ["MinStack", "push", "push", "push", "getMin", "pop", "top", "getMin"]
+          - [[], [-2], [0], [-3], [], [], [], []]
+        expected: [null, null, null, null, -3, null, 0, -2]
+      - args:
+          - ["MinStack", "push", "getMin", "top"]
+          - [[], [7], [], []]
+        expected: [null, null, 7, 7]
+    checker: exact
+    refs:
+      - {lang: cpp, file: part1/ref/ref.cpp, origin: user, verified: true}
+      - {lang: java, file: part1/ref/Solution.java, origin: friend, verified: true}
+      - {lang: python, file: part1/ref/solution.py, origin: friend, verified: true}
+    brute: {lang: python, file: part1/brute.py, origin: user, verified: true}
+    limits: {time_ms: 300, memory_mb: 256}

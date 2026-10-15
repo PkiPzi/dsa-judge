@@ -35,6 +35,35 @@ def _ctx(slug: str, part: Part) -> dict[str, Any]:
     }
 
 
+def _ops_ctx(slug: str, part: Part) -> dict[str, Any]:
+    d = part.dsg
+    types = [p.type for p in d.constructor]
+    methods = []
+    for m in d.methods:
+        types += [p.type for p in m.params] + [m.returns]
+        methods.append(
+            {
+                "name": m.name,
+                "params_decl": "".join(f", {p.name}: {py_type(p.tnode)}" for p in m.params),
+                "ret_py": py_type(m.ret),
+                "is_void": m.ret.is_void,
+                "call_args": ", ".join(p.name for p in m.params),
+            }
+        )
+    return {
+        "slug": slug,
+        "part_id": part.id,
+        "title": part.title,
+        "class_name": d.class_name,
+        "ctor_types": [str(p.tnode) for p in d.constructor],
+        "ctor_decl": "".join(f", {p.name}: {py_type(p.tnode)}" for p in d.constructor),
+        "ctor_call": ", ".join(p.name for p in d.constructor),
+        "methods": methods,
+        "uses_listnode": uses(types, "ListNode"),
+        "uses_treenode": uses(types, "TreeNode"),
+    }
+
+
 def _syntax_check(code: str) -> None:
     try:
         compile(code, "<build>/sol.py", "exec")
@@ -51,9 +80,18 @@ class Python:
     sol_filename = "sol.py"
 
     def stub(self, slug: str, part: Part) -> str:
+        if part.mode == "ops":
+            return render("py_ops_stub.py.j2", **_ops_ctx(slug, part))
         return render("py_stub.py.j2", **_ctx(slug, part))
 
     def driver_files(self, slug: str, part: Part) -> dict[str, str]:
+        if part.mode == "ops":
+            ctx = _ops_ctx(slug, part)
+            ctx["methods"] = {
+                m.name: {"params": [str(p.tnode) for p in m.params], "returns": str(m.ret)}
+                for m in part.dsg.methods
+            }
+            return {"driver.py": render("py_ops_driver.py.j2", **ctx)}
         return {"driver.py": render("py_driver.py.j2", **_ctx(slug, part))}
 
     def build(

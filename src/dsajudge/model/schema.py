@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from dsajudge.model.expr import ExprError, parse_expr
 from dsajudge.model.types import TypeNode, check_value, java_list_depth, parse_type
 
 Lang = Literal["cpp", "java", "python"]
@@ -112,6 +113,103 @@ class Signature(_Model):
         return self.lang_types.get(lang, {}).get(key)
 
 
+# Names of constraint entries in an ops part that are not methods.
+OPS_RESERVED = ("calls", "ctor")
+
+
+class Method(_Model):
+    """One method of a design class. ``requires``/``effects`` drive the call-sequence generator:
+    a method may only be called while every counter in ``requires`` is at least that value, and
+    adds its ``effects`` to the counters afterwards (a stack's ``pop`` needs ``size >= 1``)."""
+
+    name: str
+    params: list[Param] = Field(default_factory=list)
+    returns: str = "void"
+    requires: dict[str, int] = Field(default_factory=dict)
+    effects: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v):
+            raise ValueError(f"method name {v!r} is not a valid identifier")
+        return v
+
+    @field_validator("returns")
+    @classmethod
+    def _returns(cls, v: str) -> str:
+        parse_type(v, allow_void=True)
+        return v
+
+    @property
+    def ret(self) -> TypeNode:
+        return parse_type(self.returns, allow_void=True)
+
+
+class Design(_Model):
+    """A design problem (``mode: ops``): a class built by a constructor and driven by a
+    sequence of method calls, in LeetCode's wire format (see PLAN.md §4.3)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    class_name: str = Field(alias="class")
+    constructor: list[Param] = Field(default_factory=list)
+    # Counters the generator tracks: name -> initial value (an int, or an expression over the
+    # constructor's parameters such as "len(nums)").
+    counters: dict[str, int | str] = Field(default_factory=dict)
+    methods: list[Method]
+
+    @field_validator("class_name")
+    @classmethod
+    def _cls(cls, v: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v):
+            raise ValueError(f"class name {v!r} is not a valid identifier")
+        return v
+
+    @model_validator(mode="after")
+    def _check(self) -> Design:
+        if not self.methods:
+            raise ValueError("a design needs at least one method")
+        ctor = [p.name for p in self.constructor]
+        if len(set(ctor)) != len(ctor):
+            raise ValueError(f"duplicate constructor params in {ctor}")
+        names = [m.name for m in self.methods]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate method names in {names}")
+        for n in names:
+            if n in OPS_RESERVED:
+                raise ValueError(f"method name {n!r} is reserved (used in constraints)")
+            if n == self.class_name:
+                raise ValueError(f"method {n!r} has the same name as the class")
+        for m in self.methods:
+            pn = [p.name for p in m.params]
+            if len(set(pn)) != len(pn):
+                raise ValueError(f"method {m.name}: duplicate param names in {pn}")
+            for key in [*m.requires, *m.effects]:
+                if key not in self.counters:
+                    raise ValueError(
+                        f"method {m.name}: unknown counter {key!r} "
+                        f"(declare it under counters; have {sorted(self.counters)})"
+                    )
+        for cname, init in self.counters.items():
+            if isinstance(init, str):
+                try:
+                    unknown = parse_expr(init).names() - set(ctor)
+                except ExprError as e:
+                    raise ValueError(f"counter {cname}: {e}") from e
+                if unknown:
+                    raise ValueError(
+                        f"counter {cname}: {sorted(unknown)[0]!r} is not a constructor param"
+                    )
+        return self
+
+    def method(self, name: str) -> Method:
+        for m in self.methods:
+            if m.name == name:
+                return m
+        raise KeyError(name)
+
+
 class Sample(_Model):
     args: list[Any]
     expected: Any
@@ -147,8 +245,9 @@ class Part(_Model):
     id: int
     title: str
     statement: str
-    mode: Literal["function", "stdio"] = "function"
+    mode: Literal["function", "stdio", "ops"] = "function"
     signature: Signature | None = None
+    design: Design | None = None
     constraints: dict[str, dict[str, Any]] = Field(default_factory=dict)
     guarantees: list[str] = Field(default_factory=list)
     samples: list[Sample] = Field(default_factory=list)
@@ -174,6 +273,10 @@ class Part(_Model):
 
     @model_validator(mode="after")
     def _check(self) -> Part:
+        if self.mode == "ops":
+            return self._check_ops()
+        if self.design is not None:
+            raise ValueError(f"part {self.id}: design is only for mode: ops")
         if self.mode == "function" and self.signature is None:
             raise ValueError(f"part {self.id}: function mode needs a signature")
         if self.mode == "stdio":
@@ -203,10 +306,51 @@ class Part(_Model):
                     raise ValueError(err)
         return self
 
+    def _check_ops(self) -> Part:
+        from dsajudge.model.design import check_sequence
+
+        if self.design is None:
+            raise ValueError(f"part {self.id}: ops mode needs a design (class, methods)")
+        if self.signature is not None:
+            raise ValueError(
+                f"part {self.id}: ops mode describes the class in design, not signature"
+            )
+        if self.input_format or self.output_format:
+            raise ValueError(f"part {self.id}: input_format/output_format are for stdio mode")
+        if self.checker in ("unordered", "unordered_deep"):
+            raise ValueError(
+                f"part {self.id}: the result list of an ops part is ordered; "
+                "use exact, float:EPS or custom"
+            )
+        for i, smp in enumerate(self.samples, 1):
+            if len(smp.args) != 2:
+                raise ValueError(
+                    f"part {self.id} sample {i}: args must be [operations, arguments] "
+                    f"(two lists), got {len(smp.args)} value(s)"
+                )
+            err = check_sequence(
+                self.design, smp.args[0], smp.args[1], smp.expected, f"part {self.id} sample {i}"
+            )
+            if err:
+                raise ValueError(err)
+        return self
+
     @property
     def sig(self) -> Signature:
-        assert self.signature is not None, "stdio parts have no signature"
+        assert self.signature is not None, f"{self.mode} parts have no signature"
         return self.signature
+
+    @property
+    def dsg(self) -> Design:
+        assert self.design is not None, f"{self.mode} parts have no design"
+        return self.design
+
+    @property
+    def wire_names(self) -> list[str]:
+        """Names of the lines of a test input file (the input is one JSON value per line)."""
+        if self.mode == "ops":
+            return ["ops", "args"]
+        return [p.name for p in self.sig.params]
 
     def derived_oracle(self) -> Literal["ref", "brute-only", "promoted"] | None:
         if any(r.origin == "promoted" for r in self.refs):

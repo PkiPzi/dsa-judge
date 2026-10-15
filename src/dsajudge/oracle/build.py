@@ -52,7 +52,7 @@ from dsajudge.model.constraints import ConstraintError
 from dsajudge.model.loader import constraint_line
 from dsajudge.model.render import FormatError, check_format, render_input
 from dsajudge.model.schema import Part, Problem, SourceFile
-from dsajudge.oracle.shrink import shrink
+from dsajudge.oracle.shrink import candidates, ops_candidates, shrink
 
 TL_MIN_MS, TL_MAX_MS, TL_DEFAULT_MS = 1000, 5000, 1000
 MIN_CUSTOM_GEN_CHECKS = 200
@@ -103,9 +103,19 @@ def _param_of(error: str) -> str | None:
 def _describe_input(part: Part, args: list[Any]) -> str:
     if part.mode == "stdio":
         return "\n" + "\n".join("    " + ln for ln in render_input(part, args).rstrip().split("\n"))
+    if part.mode == "ops":
+        return _describe_calls(args)
     return ", ".join(
         f"{p.name} = {short(a, 300)}" for p, a in zip(part.sig.params, args, strict=True)
     )
+
+
+def _describe_calls(args: list[Any]) -> str:
+    """An ops input as the calls it makes: ``MinStack(), push(3), getMin(), ...``."""
+    ops, arglists = args
+    calls = [f"{o}({', '.join(dumps(a) for a in al)})" for o, al in zip(ops, arglists, strict=True)]
+    text = ", ".join(calls)
+    return text if len(text) <= 600 else text[:597] + "..."
 
 
 def _src_info(problem_dir: Path, src: SourceFile) -> SourceInfo:
@@ -544,7 +554,7 @@ def _stress(
         ]
 
     say(f"stress: {len(failing)} mismatch(es); shrinking the smallest")
-    small = shrink(args, valid, fails)
+    small = shrink(args, valid, fails, ops_candidates if part.mode == "ops" else candidates)
     (final,) = materialize([small])
     r_out = run_source(problem, problem_dir, part, ref, [final], jcfg, backend, jcfg.ref_timeout_s)[
         final.id

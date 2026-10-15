@@ -12,7 +12,7 @@ from dsajudge.lang import get_language
 from dsajudge.model.loader import load_problem
 from dsajudge.model.schema import Part
 
-from .conftest import FIXTURE_PROBLEM, simple_part
+from .conftest import FIXTURE_PROBLEM, FIXTURES, simple_part
 
 GOLDEN = Path(__file__).parent / "golden"
 UPDATE = os.environ.get("DSA_UPDATE_GOLDEN") == "1"
@@ -46,6 +46,8 @@ CASES: dict[str, Part] = {
             [],
         )
     ),
+    "ops-min-stack": load_problem(FIXTURES / "problems" / "min-stack").parts[0],
+    "ops-lru-cache": load_problem(FIXTURES / "problems" / "lru-cache").parts[0],
     "inplace-void": _part(
         **simple_part(
             1,

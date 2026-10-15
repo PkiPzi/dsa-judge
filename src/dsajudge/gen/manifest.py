@@ -63,7 +63,7 @@ class Manifest(_M):
     version: Literal[1] = MANIFEST_VERSION
     slug: str
     part: int
-    mode: Literal["function", "stdio"]
+    mode: Literal["function", "stdio", "ops"]
     oracle: Literal["ref", "brute-only", "promoted"]
     spec_hash: str
     generator: Literal["dsl", "custom"] = "dsl"

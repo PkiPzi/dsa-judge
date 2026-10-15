@@ -9,7 +9,7 @@ from dsajudge.config import JudgeConfig
 from dsajudge.judge.cache import build_cached, run_tool, tool_version
 from dsajudge.lang.base import Built, Program
 from dsajudge.lang.codegen import render, static, stdio_ctx, uses
-from dsajudge.model.schema import Lang, Part
+from dsajudge.model.schema import Lang, Param, Part
 from dsajudge.model.types import TypeNode, java_list_depth, java_type
 
 # Prefixed onto line 1 of the user's file so line numbers in errors stay right.
@@ -88,17 +88,72 @@ def _ctx(slug: str, part: Part) -> dict[str, Any]:
     }
 
 
+def _ops_ctx(slug: str, part: Part) -> dict[str, Any]:
+    d = part.dsg
+    types = [p.type for p in d.constructor]
+
+    def params(ps: list[Param], prefix: str) -> list[dict[str, str]]:
+        return [
+            {
+                "name": p.name,
+                "var": f"{prefix}{i}",
+                "java_type": java_type(p.tnode),
+                "java_conv": java_conv(p.tnode, 0, f"ja.get({i})"),
+            }
+            for i, p in enumerate(ps)
+        ]
+
+    ctor = params(d.constructor, "c")
+    methods = []
+    for m in d.methods:
+        ps = params(m.params, "a")
+        types += [p.type for p in m.params] + [m.returns]
+        writer = {"listnode": "writeListNode", "treenode": "writeTreeNode"}.get(m.ret.kind, "write")
+        methods.append(
+            {
+                "name": m.name,
+                "params": ps,
+                "params_decl": ", ".join(f"{p['java_type']} {p['name']}" for p in ps),
+                "call_args": ", ".join(p["var"] for p in ps),
+                "doc_args": ", ".join(p["name"] for p in ps),
+                "ret_java": java_type(m.ret),
+                "is_void": m.ret.is_void,
+                "writer": writer,
+            }
+        )
+    return {
+        "slug": slug,
+        "part_id": part.id,
+        "title": part.title,
+        "class_name": d.class_name,
+        "ctor": ctor,
+        "ctor_decl": ", ".join(f"{p['java_type']} {p['name']}" for p in ctor),
+        "ctor_call": ", ".join(p["var"] for p in ctor),
+        "ctor_doc": ", ".join(p["name"] for p in ctor),
+        "methods": methods,
+        "uses_listnode": uses(types, "ListNode"),
+        "uses_treenode": uses(types, "TreeNode"),
+    }
+
+
 class Java:
     name: Lang = "java"
     ext = "java"
     sol_filename = "Solution.java"
 
     def stub(self, slug: str, part: Part) -> str:
+        if part.mode == "ops":
+            return render("java_ops_stub.java.j2", **_ops_ctx(slug, part))
         return render("java_stub.java.j2", **_ctx(slug, part))
 
     def driver_files(self, slug: str, part: Part) -> dict[str, str]:
+        main = (
+            render("Main_ops.java.j2", **_ops_ctx(slug, part))
+            if part.mode == "ops"
+            else render("Main.java.j2", **_ctx(slug, part))
+        )
         return {
-            "Main.java": render("Main.java.j2", **_ctx(slug, part)),
+            "Main.java": main,
             "DsaJson.java": static("DsaJson.java"),
             "ListNode.java": static("ListNode.java"),
             "TreeNode.java": static("TreeNode.java"),

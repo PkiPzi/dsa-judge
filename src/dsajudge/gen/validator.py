@@ -11,7 +11,8 @@ from itertools import pairwise
 from typing import Any
 
 from dsajudge.gen import trees
-from dsajudge.model.constraints import Bound, ParamSpec
+from dsajudge.model.constraints import Bound, DesignSpecs, ParamSpec
+from dsajudge.model.design import check_sequence, replay_counters
 from dsajudge.model.expr import ExprError
 from dsajudge.model.types import check_value
 
@@ -234,12 +235,18 @@ def _check_param(p: ParamSpec, v: Any, env: dict[str, Any]) -> str | None:
     return None
 
 
-def validate_args(specs: list[ParamSpec], args: list[Any]) -> list[str]:
-    """Constraint violations of one input; an empty list means valid."""
+def validate_args(
+    specs: list[ParamSpec], args: list[Any], base_env: dict[str, Any] | None = None
+) -> list[str]:
+    """Constraint violations of one input; an empty list means valid.
+
+    ``base_env`` holds values the bounds may refer to besides earlier params (the constructor's
+    arguments, for the calls of an ops part).
+    """
     if len(args) != len(specs):
         return [f"expected {len(specs)} argument(s), got {len(args)}"]
     errors: list[str] = []
-    env: dict[str, Any] = {}
+    env: dict[str, Any] = dict(base_env or {})
     for p, v in zip(specs, args, strict=True):
         err = check_value(p.t, v, p.name)
         if err:
@@ -253,3 +260,33 @@ def validate_args(specs: list[ParamSpec], args: list[Any]) -> list[str]:
             errors.append(err)
         env[p.name] = v
     return errors
+
+
+def validate_ops(specs: DesignSpecs, args: list[Any]) -> list[str]:
+    """Constraint violations of an ops input ``[ops, args]``; an empty list means valid."""
+    design = specs.design
+    if len(args) != 2:
+        return [f"expected 2 argument(s) (operations, arguments), got {len(args)}"]
+    ops, arglists = args
+    err = check_sequence(design, ops, arglists)
+    if err:
+        return [err]
+    ctor_errors = validate_args(specs.ctor, arglists[0])
+    if ctor_errors:
+        return [f"ctor.{e}" for e in ctor_errors]
+    env = {p.name: a for p, a in zip(design.constructor, arglists[0], strict=True)}
+    try:
+        lo, hi = specs.calls.eval_int(env)
+    except ExprError as e:
+        return [f"calls: {e}"]
+    n = len(ops) - 1
+    if not lo <= n <= hi:
+        return [f"calls: {n} calls is outside [{lo}, {hi}] (constraint len: {specs.calls})"]
+    for i in range(1, len(ops)):
+        errs = validate_args(specs.methods[ops[i]], arglists[i], env)
+        if errs:
+            return [f"{ops[i]}.{errs[0]} (call #{i})"]
+    bad = replay_counters(design, ops, arglists)
+    if bad:
+        return [f"calls: {bad}"]
+    return []
