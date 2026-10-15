@@ -5,6 +5,9 @@ line on stdout. Kept free of dsajudge imports so it runs under an isolated inter
 
 * gen:      {"requests": [{"size": "small", "flavor": "random", "seed": 1}, ...]}
             -> {"results": [[arg, ...], ...]}      (gen.py: generate(rng, size, flavor) -> list)
+* check:    a line-oriented server: each stdin line is {"args": [...], "expected": v, "got": v};
+            each reply line is {"ok": bool, "msg": str} or {"error": "traceback"}
+            (checker.py: check(args, expected, got) -> (bool, str))
 * validate: {"inputs": [[arg, ...], ...]}
             -> {"results": [null | "message", ...]} (validate.py: validate(args) -> None | str)
 """
@@ -27,8 +30,36 @@ def _load(path: str):  # type: ignore[no-untyped-def]
     return mod
 
 
+def serve_checks(path: str) -> int:
+    mod = _load(path)
+    fn = getattr(mod, "check", None)
+    if not callable(fn):
+        sys.stdout.write(json.dumps({"error": "checker.py must define check(args, expected, got)"}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return 0
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            req = json.loads(line)
+            res = fn(req["args"], req["expected"], req["got"])
+            if isinstance(res, tuple | list):
+                ok, msg = bool(res[0]), str(res[1]) if len(res) > 1 else ""
+            else:
+                ok, msg = bool(res), ""
+            reply: dict[str, object] = {"ok": ok, "msg": msg}
+        except Exception:
+            reply = {"error": traceback.format_exc(limit=6)}
+        sys.stdout.write(json.dumps(reply) + "\n")
+        sys.stdout.flush()
+    return 0
+
+
 def main() -> int:
     kind, path = sys.argv[1], sys.argv[2]
+    if kind == "check":
+        return serve_checks(path)
     try:
         request = json.loads(sys.stdin.read())
         mod = _load(path)

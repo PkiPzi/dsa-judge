@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from dsajudge.config import Config
 from dsajudge.gen.manifest import Manifest, load_manifest
-from dsajudge.judge.checkers import part_checker
+from dsajudge.judge.checkers import CheckerError, PartChecker, part_checker
 from dsajudge.judge.limits import MemoryBackend, detect_backend, raise_stack_limit
 from dsajudge.judge.runner import BatchOutcome, RawResult, RunLimits, run_tests
 from dsajudge.judge.stdio import run_program_tests
@@ -83,7 +83,9 @@ def time_limit_ms(base_ms: float, lang: Lang, cfg: Config) -> float:
     return base_ms * cfg.judge.time_multipliers.get(lang, 1.0)
 
 
-def _to_verdict(t: JudgeTest, r: RawResult, part: Part, *, with_io: bool) -> TestVerdict:
+def _to_verdict(
+    t: JudgeTest, r: RawResult, part: Part, check: PartChecker, *, with_io: bool
+) -> TestVerdict:
     names = [p.name for p in part.sig.params]
     v = TestVerdict(
         id=t.id,
@@ -99,8 +101,17 @@ def _to_verdict(t: JudgeTest, r: RawResult, part: Part, *, with_io: bool) -> Tes
         v.got, v.has_got = r.output, True
         if not t.has_expected:
             v.run_only = True
-        elif not part_checker(part)(t.expected, r.output):
-            v.verdict = Verdict.WA_UNVERIFIED if t.unverified else Verdict.WA
+        else:
+            try:
+                ok, why = check.verdict(
+                    t.expected, r.output, t.args() if check.needs_args else None
+                )
+            except CheckerError as e:
+                raise JudgeError(str(e)) from e
+            if not ok:
+                v.verdict = Verdict.WA_UNVERIFIED if t.unverified else Verdict.WA
+                if why:
+                    v.message = why
     elif r.status == "tle":
         v.verdict = Verdict.TLE
     elif r.status in ("mle", "oom"):
@@ -268,7 +279,17 @@ def judge(
     outcome = _execute(target, built, tests, limits, backend, stop_on_failure=not all_tests)
     by_id = {t.id: t for t in tests}
     _relocate(outcome.results, built, target.src)
-    results = [_to_verdict(by_id[r.id], r, part, with_io=(mode == "run")) for r in outcome.results]
+    try:
+        check = _checker(target, cfg)
+    except CheckerError as e:
+        raise JudgeError(str(e)) from e
+    try:
+        results = [
+            _to_verdict(by_id[r.id], r, part, check, with_io=(mode == "run"))
+            for r in outcome.results
+        ]
+    finally:
+        check.close()
     report = Report(
         verdict=overall(results, len(tests)),
         total=len(tests),
@@ -283,6 +304,10 @@ def judge(
     if report.verdict == Verdict.JE and len(results) < len(tests) and not report.first_failure:
         report.notes.append("the solution process stopped before every test ran")
     return report
+
+
+def _checker(target: Target, cfg: Config) -> PartChecker:
+    return part_checker(target.part, target.problem_dir, cfg.judge)
 
 
 def _safe_manifest(target: Target) -> Manifest | None:
@@ -328,7 +353,11 @@ def debug_test(target: Target, cfg: Config, test_id: str) -> tuple[Report, str]:
     outcome = _execute(target, built, [t], limits, backend, stop_on_failure=True)
     _relocate(outcome.results, built, target.src)
     outcome.stderr = outcome.stderr.replace(str(built.cwd / "sol.cpp"), str(target.src))
-    results = [_to_verdict(t, r, target.part, with_io=True) for r in outcome.results]
+    check = _checker(target, cfg)
+    try:
+        results = [_to_verdict(t, r, target.part, check, with_io=True) for r in outcome.results]
+    finally:
+        check.close()
     report = Report(
         verdict=overall(results, 1),
         total=1,

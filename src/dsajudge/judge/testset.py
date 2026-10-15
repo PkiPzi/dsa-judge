@@ -17,7 +17,7 @@ from typing import Any
 
 from dsajudge.config import JudgeConfig, cache_dir
 from dsajudge.judge.cache import digest
-from dsajudge.judge.checkers import part_checker
+from dsajudge.judge.checkers import PartChecker, part_checker
 from dsajudge.judge.limits import MemoryBackend
 from dsajudge.judge.runner import BatchOutcome, RunLimits, TestCase, run_tests
 from dsajudge.judge.stdio import run_program_tests, stdin_file
@@ -225,6 +225,11 @@ def run_source(
     return out
 
 
+def agree(check: PartChecker, t: JudgeTest, expected: Any, got: Any) -> bool:
+    """Does ``got`` match ``expected`` on test ``t`` (custom checkers also see the input)."""
+    return check(expected, got, t.args() if check.needs_args else None)
+
+
 def stdin_for_test(part: Part, t: JudgeTest) -> Path:
     """The stdin text file for a stdio test (rendered from its canonical args)."""
     return stdin_file(t.path.read_text(encoding="utf-8"), render_input(part, t.args()))
@@ -245,7 +250,7 @@ def resolve(
     ``calibration_tests`` (default: ``tests``) are the tests whose C++ ref timings set the
     auto time limit; pass the full suite so `run` and `submit` agree.
     """
-    check = part_checker(part)
+    check = part_checker(part, problem_dir, cfg)
     tests = [t for t in tests if not t.sealed]
     if calibration_tests is not None:
         calibration_tests = [t for t in calibration_tests if not t.sealed]
@@ -269,7 +274,7 @@ def resolve(
                         f"ref {ref.file} failed on {t.id} ({run.status}): "
                         f"{run.message.strip()[:500]}"
                     )
-                if t.has_expected and not check(t.expected, run.output):
+                if t.has_expected and not agree(check, t, t.expected, run.output):
                     raise OracleError(
                         f"ref {ref.file} disagrees with {t.id}: got {short(run.output)}, "
                         f"expected {short(t.expected)}"
@@ -280,7 +285,7 @@ def resolve(
                 continue
             value = runs[first][t.id].output
             for other in part.refs[1:]:
-                if not check(value, runs[other.file][t.id].output):
+                if not agree(check, t, value, runs[other.file][t.id].output):
                     raise OracleError(
                         f"refs disagree on {t.id}: {first} gives {short(value)}, "
                         f"{other.file} gives {short(runs[other.file][t.id].output)}"
@@ -303,7 +308,7 @@ def resolve(
         for t in small:
             run = runs1[t.id]
             if t.has_expected:
-                if run.status == "ok" and not check(t.expected, run.output):
+                if run.status == "ok" and not agree(check, t, t.expected, run.output):
                     raise OracleError(
                         f"brute {part.brute.file} disagrees with {t.id}: got {short(run.output)}, "
                         f"expected {short(t.expected)}"
