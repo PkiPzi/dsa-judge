@@ -20,7 +20,7 @@ Full setup and troubleshooting: [docs/SETUP_AND_DEBUG.md](docs/SETUP_AND_DEBUG.m
 sudo pacman -S --needed gcc jdk-openjdk python uv
 
 # intake (needed from Phase 3); whisper.cpp + its CUDA backend are in the official repos
-sudo pacman -S --needed ffmpeg wl-clipboard ollama-cuda whisper-cpp ggml-cuda
+sudo pacman -S --needed ffmpeg wl-clipboard kdialog ollama-cuda whisper-cpp ggml-cuda
 sudo systemctl enable --now ollama
 # optional: keep models on a bigger partition: `sudo systemctl edit ollama`, then add
 #   [Service]  Environment="OLLAMA_MODELS=/mnt/models/ollama"

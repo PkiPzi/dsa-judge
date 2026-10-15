@@ -13,7 +13,7 @@ used on `127.0.0.1` and whisper.cpp is a local process.
 
 ```zsh
 # Ollama with CUDA support
-sudo pacman -S --needed ollama-cuda ffmpeg wl-clipboard
+sudo pacman -S --needed ollama-cuda ffmpeg wl-clipboard kdialog
 sudo systemctl enable --now ollama
 
 # whisper.cpp with the CUDA backend, both from the official repos (no AUR needed)
@@ -78,8 +78,10 @@ whisper-cli -m /mnt/models/whisper/ggml-large-v3-turbo-q5_0.bin -f /tmp/note.wav
 The "suboptimal performance due to a lack of tensor cores" line is normal on a GTX 1650.
 
 Language matters for Hinglish voice notes: `auto` usually detects English and drops the Hindi
-sentences; `hi` keeps them but writes Hindi words in Devanagari. Compare `-l auto`, `-l en` and
-`-l hi` on one of your own clips before choosing `ai.whisper_language`.
+sentences, so use `hi`. whisper writes Hindi in Devanagari, which many terminals render badly, so
+`ai.whisper_prompt` (a romanized Hinglish sample, on by default) steers it to Latin letters; set it
+to `""` to get Devanagari back. `ai.whisper_beam_size` defaults to 1 (greedy, about 4x faster than
+whisper.cpp's beam of 5 on a GTX 1650); raise it if accuracy matters more than speed.
 
 Put non-default choices in `~/dsa-bank/config.toml`:
 
@@ -133,6 +135,8 @@ fine. Please also try one real voice note by hand, since that is the part no tes
 ```zsh
 export DSA_HOME=/tmp/dsa-local
 dsa add statement.jpg voice-note.m4a solution.cpp --slug try-1
+# or run `dsa add --slug try-1` alone: a file dialog opens (needs kdialog) where you
+# Ctrl/Shift-click the photos, voice note and solution photo or file
 # review opens $EDITOR with a checklist; fix anything wrong, save, quit
 dsa open try-1
 ```

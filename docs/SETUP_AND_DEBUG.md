@@ -11,7 +11,7 @@ Real-model (Ollama, whisper.cpp) setup is in [LOCAL_TESTING.md](../LOCAL_TESTING
 
 ```zsh
 sudo pacman -S --needed gcc jdk-openjdk python uv     # the judge: C++, Java, Python
-sudo pacman -S --needed ffmpeg wl-clipboard           # intake: audio conversion, `dsa add --clip`
+sudo pacman -S --needed ffmpeg wl-clipboard kdialog   # intake: audio, `dsa add --clip`, file dialog
 ```
 
 You only need the compilers for the languages you practise in, but `dsa build` of a problem with
