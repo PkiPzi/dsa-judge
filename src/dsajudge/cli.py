@@ -63,10 +63,6 @@ PRIVACY_NOTE = (
     'or a VS Code profile without AI extensions (DSA_EDITOR="code --profile Practice").'
 )
 
-LangOpt = Annotated[
-    str | None, typer.Option("--lang", "-l", help="cpp, java or python (default: the work dir's)")
-]
-
 
 def _slugs(incomplete: str) -> list[str]:
     """Shell completion: problem slugs in the bank that start with what was typed."""
@@ -74,6 +70,48 @@ def _slugs(incomplete: str) -> list[str]:
         return [s for s in list_slugs() if s.startswith(incomplete)]
     except Exception:  # completion must never print a traceback into the user's prompt
         return []
+
+
+def _langs(incomplete: str) -> list[str]:
+    return [lang for lang in LANGS if lang.startswith(incomplete)]
+
+
+def _tags(incomplete: str) -> list[str]:
+    try:
+        tags: set[str] = set()
+        for slug in list_slugs():
+            tags.update(load_problem(find_problem(slug, seed_from_fixtures=False)[0]).tags)
+        return sorted(t for t in tags if t.startswith(incomplete))
+    except Exception:
+        return []
+
+
+def _test_ids(incomplete: str) -> list[str]:
+    """Sample and hidden test ids of the current work dir's part."""
+    try:
+        info = find_workdir(Path.cwd())
+        if info is None:
+            return []
+        problem = load_problem(info.bank)
+        part = problem.part(info.part)
+        ids = [f"sample/{i}" for i in range(1, len(part.samples) + 1)]
+        manifest = load_manifest(info.bank, info.part)
+        if manifest:
+            ids += [t.id for t in manifest.tests]
+        return [i for i in ids if i.startswith(incomplete)]
+    except Exception:
+        return []
+
+
+LangOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--lang",
+        "-l",
+        help="cpp, java or python (default: the work dir's)",
+        autocompletion=_langs,
+    ),
+]
 
 
 def fail(msg: str, code: int = 2) -> NoReturn:
@@ -244,7 +282,7 @@ def _build_parts(slug: str, part: int | None) -> None:
 
 @app.command()
 def build(
-    slug: Annotated[str, typer.Argument(help="Problem slug")],
+    slug: Annotated[str, typer.Argument(help="Problem slug", autocompletion=_slugs)],
     part: Annotated[int | None, typer.Option("--part", "-p", help="Only this part")] = None,
 ) -> None:
     """(Re)generate the hidden tests, check the refs and oracles, calibrate the time limit."""
@@ -253,7 +291,7 @@ def build(
 
 @app.command()
 def rebuild(
-    slug: Annotated[str, typer.Argument(help="Problem slug")],
+    slug: Annotated[str, typer.Argument(help="Problem slug", autocompletion=_slugs)],
     part: Annotated[int | None, typer.Option("--part", "-p", help="Only this part")] = None,
 ) -> None:
     """Wipe the generated tests and caches for a problem and build again from the seeds."""
@@ -276,7 +314,9 @@ def rebuild(
 
 @app.command("dispute")
 def dispute_cmd(
-    test_id: Annotated[str, typer.Argument(help="Test id, e.g. small_random/07")],
+    test_id: Annotated[
+        str, typer.Argument(help="Test id, e.g. small_random/07", autocompletion=_test_ids)
+    ],
     note: Annotated[str, typer.Option("--note", help="Why you think the oracle is wrong")] = "",
     clear: Annotated[bool, typer.Option("--clear", help="Withdraw an earlier dispute")] = False,
 ) -> None:
@@ -399,7 +439,7 @@ def add(
 
 @app.command()
 def followup(
-    slug: Annotated[str, typer.Argument(help="Problem to extend")],
+    slug: Annotated[str, typer.Argument(help="Problem to extend", autocompletion=_slugs)],
     files: Annotated[
         list[Path] | None, typer.Argument(help="Photos, voice notes, text, code")
     ] = None,
@@ -422,7 +462,7 @@ def followup(
 
 @app.command("ref")
 def ref_cmd(
-    slug: Annotated[str, typer.Argument(help="Problem slug")],
+    slug: Annotated[str, typer.Argument(help="Problem slug", autocompletion=_slugs)],
     file: Annotated[Path, typer.Argument(help="A code file or a photo of code")],
     part: Annotated[int, typer.Option("--part", "-p", help="Part number")] = 1,
     lang: LangOpt = None,
@@ -448,7 +488,9 @@ def ref_cmd(
 
 @app.command("list")
 def list_cmd(
-    tag: Annotated[str | None, typer.Option(help="Only problems with this tag")] = None,
+    tag: Annotated[
+        str | None, typer.Option(help="Only problems with this tag", autocompletion=_tags)
+    ] = None,
     unsolved: Annotated[bool, typer.Option(help="Only problems with unsolved parts")] = False,
     part_status: Annotated[bool, typer.Option(help="Show every part's status")] = False,
 ) -> None:
@@ -488,7 +530,10 @@ def list_cmd(
 
 @app.command()
 def show(
-    slug: Annotated[str | None, typer.Argument(help="Default: the current work dir's")] = None,
+    slug: Annotated[
+        str | None,
+        typer.Argument(help="Default: the current work dir's", autocompletion=_slugs),
+    ] = None,
 ) -> None:
     """Parts, oracle mode, status and best times."""
     if slug is None:
@@ -539,6 +584,55 @@ def show(
     console.print(table)
 
 
+# ------------------------------------------------------------------ completions
+
+SHELLS = ("zsh", "bash", "fish")
+
+
+def _completion_target(shell: str) -> Path:
+    """Where each shell autoloads completions from (no rc file is edited)."""
+    data = Path(os.environ.get("XDG_DATA_HOME") or "~/.local/share").expanduser()
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+    return {
+        "zsh": data / "zsh" / "site-functions" / "_dsa",
+        "bash": data / "bash-completion" / "completions" / "dsa",
+        "fish": config / "fish" / "completions" / "dsa.fish",
+    }[shell]
+
+
+def completion_script(shell: str) -> str:
+    from typer.completion import get_completion_script  # type: ignore[attr-defined]
+
+    return get_completion_script(prog_name="dsa", complete_var="_DSA_COMPLETE", shell=shell) + "\n"
+
+
+@app.command()
+def completions(
+    shell: Annotated[
+        str | None, typer.Argument(help="zsh, bash or fish (default: from $SHELL)")
+    ] = None,
+    install: Annotated[
+        bool, typer.Option("--install", help="Write the script where the shell autoloads it")
+    ] = False,
+) -> None:
+    """Print (or install) the shell completion script: commands, options, slugs, test ids."""
+    chosen = shell or Path(os.environ.get("SHELL", "")).name
+    if chosen not in SHELLS:
+        fail(f"give a shell: {', '.join(SHELLS)}" + (f" (not {chosen!r})" if chosen else ""))
+    script = completion_script(chosen)
+    if not install:
+        typer.echo(script, nl=False)
+        return
+    target = _completion_target(chosen)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(script, encoding="utf-8")
+    console.print(f"wrote {escape(str(target))}", soft_wrap=True)
+    if chosen == "zsh":
+        console.print("add this to ~/.zshrc before `compinit` if it is not there yet:")
+        console.print(f"  fpath=({escape(str(target.parent))} $fpath)", soft_wrap=True)
+    console.print("open a new shell to use it (the `dsa` command must be on your PATH)")
+
+
 # ------------------------------------------------------------------ stats and review
 
 
@@ -558,7 +652,10 @@ def stats(
     days: Annotated[
         int | None, typer.Option("--days", "-d", min=1, help="Only the last N days")
     ] = None,
-    tag: Annotated[str | None, typer.Option("--tag", help="Only problems with this tag")] = None,
+    tag: Annotated[
+        str | None,
+        typer.Option("--tag", help="Only problems with this tag", autocompletion=_tags),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output")] = False,
 ) -> None:
     """Practice statistics: solved, first-try rate, solve times, languages, streaks."""
@@ -944,7 +1041,10 @@ def submit(
 
 @app.command()
 def debug(
-    test_id: Annotated[str | None, typer.Argument(help="Default: the last failing test")] = None,
+    test_id: Annotated[
+        str | None,
+        typer.Argument(help="Default: the last failing test", autocompletion=_test_ids),
+    ] = None,
     lang: LangOpt = None,
 ) -> None:
     """Re-run a failing test with sanitizers (C++) or a full traceback (Java/Python)."""
@@ -1002,4 +1102,10 @@ def watch(lang: LangOpt = None) -> None:
 
 def main() -> None:
     get_language("cpp")  # fail fast if templates are missing
+    if "_DSA_COMPLETE" in os.environ:
+        # add_completion=False keeps Typer's rc-file-editing flags out of --help, which also
+        # skips registering its shell classes; do that here, only when a shell is asking.
+        from typer.completion import completion_init  # type: ignore[attr-defined]
+
+        completion_init()
     app()
