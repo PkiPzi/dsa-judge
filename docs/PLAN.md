@@ -53,6 +53,10 @@ dsa show [SLUG]                                   # parts, oracle mode, status, 
 dsa reveal-ref SLUG --part N                      # spoiler; asks for confirmation
 dsa promote [--part N]                            # brute-only parts: your AC solution becomes the ref
 dsa dispute TEST_ID                               # brute-only parts: mark the oracle as suspect for this test
+dsa stats [--days N] [--tag T] [--json]           # solved, first-try rate, solve times, streaks (Phase 4)
+dsa review [--all]                                # spaced-repetition queue; `review start`, `review fail`
+dsa export SLUG [--format hackerrank|hackerearth] # stdio parts -> test-case zip
+dsa completions [zsh|bash|fish] [--install]
 ```
 Inside a work directory, all practice commands infer slug and part from `.dsa.json`, so `dsa run` and `dsa submit` need no arguments.
 
@@ -128,7 +132,7 @@ Schema is versioned (`schema: 1`). After Phase 1 ships, schema changes need a mi
 | `ListNode` | `ListNode*` | `ListNode` | `Optional[ListNode]` |
 | `TreeNode` | `TreeNode*` | `TreeNode` | `Optional[TreeNode]` |
 
-Return types use the same mapping by value (`vector<int>`, not a reference). Java lets the spec override with `List<Integer>` and similar because friends' refs use both styles. Design problems ("implement an LRU cache", a sequence of method calls) are Phase 4 (`mode: ops`).
+Return types use the same mapping by value (`vector<int>`, not a reference). Java lets the spec override with `List<Integer>` and similar because friends' refs use both styles. Design problems ("implement an LRU cache", a sequence of method calls) are `mode: ops` (Phase 4, docs/CONSTRAINTS.md): the same types, with a `design` block (class, constructor, methods) in place of `signature`.
 
 ### 4.4 Canonical I/O
 - **Input file:** one JSON value per line, one line per parameter, in signature order. This is exactly LeetCode's custom-testcase format, so cases can be pasted from anywhere.
@@ -210,7 +214,7 @@ For full-program problems (and for exporting to HackerRank/HackerEarth later), a
 ## 7. Intake (local AI)
 
 ### 7.1 Stages
-1. **Collect.** Copy raw files to `inbox/<slug>/raw/`, ordered by filename then EXIF/mtime. Originals are kept forever.
+1. **Collect.** Copy raw files to `inbox/<slug>/raw/`, ordered by filename then EXIF/mtime. Originals are kept forever. One question may arrive as several photos (pages of the statement, a listing continued on the next photo): they are transcribed one per call and then **stitched** (Phase 4): overlapping lines are dropped and a code block cut off at the end of one photo is joined to the one that starts the next.
 2. **Transcribe.**
    - Images go to a local vision model via Ollama, one image per call, with a strict prompt: transcribe verbatim, keep code exactly (indentation matters for Python), write exponents as `10^5` and `≤` as `<=`, and mark unreadable spots as `[??]`. HEIC is converted with `pillow-heif`, and large photos are downscaled.
    - Audio is converted by `ffmpeg` to 16 kHz mono WAV, then transcribed by whisper.cpp (`whisper-cli`). Voice notes may be Hinglish; normalising that is the next stage's job.
@@ -319,6 +323,9 @@ Stack: Python ≥ 3.11, Typer, pydantic v2, ruamel.yaml (round-trips comments du
 - `stats`, `review` queue, design problems (`mode: ops`).
 - Export stdio parts as HackerRank/HackerEarth test-case zips.
 - Shell completions, PyPI packaging and publishing.
+- Several photos of one question (stitching).
+- **Done when:** `dsa stats` and `dsa review` work from the attempt log; `min-stack` and `lru-cache` build in `ref` mode (three refs in three languages agree) and each solution variant gets its verdict in every language; a stdio part exports to both zip formats; completions complete slugs, languages and test ids; the wheel installs into a clean venv and solves a function and a design problem (`scripts/smoke_wheel.sh`); `publish.yml` builds and uploads on a version tag.
+- **Deferred:** AI intake of design problems (extraction only knows function/stdio signatures); stdio-style export for ops parts; a `dsa review` reminder outside the CLI (cron/notification).
 
 ## 12. Testing rules
 - Unit tests for the DSL, codegen (golden files), checkers and verdict logic.
@@ -357,3 +364,11 @@ Append a dated line here whenever a design decision in this file changes, with t
 - 2026-10-15: Code transcribed from a photo or voice note that does not compile or pass the samples gets a model-proposed fix, shown as a unified diff and applied only after confirmation; code supplied as a file is never auto-fixed. `dsa ref` adds a ref (default `origin: friend`) through the same check, then a full build (ref agreement and stress); on any failure the yaml and files are restored.
 - 2026-10-15: `dsa doctor --models` runs 3 repetitions of: vision OCR of a Pillow-rendered statement (must keep `10^5`, `nums`, `target`, the example), text segmentation, extraction and constraint filling (schema-valid and semantically usable), and a whisper.cpp smoke run on silence (accuracy is not measured: there is no speech fixture in the repo).
 - 2026-10-15: The test suite blocks non-loopback sockets in every test.
+- 2026-10-15: Phase 4 `mode: ops` keeps LeetCode's wire format: a test input is two canonical lines (operation names with the class first, one argument list per operation) and the expected output has one result per operation (`null` for the constructor and `void`). Because that is just two JSON values, samples, manifests, hashes, the expected-output cache, `exact`/`float`/`custom` checkers and ref agreement work unchanged; only drivers, stubs, generation and validation are ops-specific. `Part.design` is a new optional field and `"ops"` a new `mode` value (additive, so no migration); `signature` must be absent for ops parts. A hidden-suite manifest records `mode: ops`, and `spec_hash` only includes the design when there is one, so existing manifests keep their hash.
+- 2026-10-15: Ops call sequences come from `constraints.calls: {len, mix}`, `ctor` and per-method param specs (names `calls` and `ctor` are reserved). Legality that depends on state (pop needs a non-empty stack) is expressed with counters (`requires`/`effects`) the generator and validator both replay; anything else is a `guarantee` with a custom `gen.py` returning `[ops, args]`. Flavors `asc`/`desc` bias toward methods that raise counters so max tests build big state (an O(n) `getMin` must fail on them); constructor scalars scale with the test size, and "small" sequences are 4x the small array cap. Time is the sum of time inside the constructor and method calls. Stress shrinking deletes calls instead of array elements.
+- 2026-10-15: The Python function driver is split into `py_head.inc`, `py_common.inc` and `py_entry.inc` partials that the ops driver includes too; a golden test pins the function driver's output as byte-identical. Partials use `.inc` so ruff and mypy do not treat them as modules.
+- 2026-10-15: Spaced repetition (`dsa review`) is derived from the attempt log and a new `reviews` table (db migration v2), not stored: first review 3 days after the first accepted submit, then 7 and 21 (retired after the third pass). A review is a fresh stub (the old solution moves to `work/.../history/`) finished by an accepted `submit`: more than 2 failed submits on the way is "shaky" (step back one interval), `dsa review fail` or leaving it open 7 days resets to a 1-day retry. A part that was submitted but never accepted comes back 1 day after its last failed submit. All time arithmetic takes an injected clock.
+- 2026-10-15: `dsa export` writes flat zips per the vendors' current help pages (HackerRank `inputNN.txt`/`outputNN.txt`; HackerEarth `inNN.txt`/`outNN.txt`, no blank lines or surrounding whitespace, suggested scores totalling 100 in their 5/5/15 easy/medium/hard split). Default counts follow each platform's guidance (15 and 10); the samples always come first and the remainder is spread over the groups, weighted toward `max`. Only stdio parts export, and only tests with a ref (or flagged brute) answer.
+- 2026-10-15: Shell completion: `add_completion` stays off (Typer's flags edit rc files); `dsa completions SHELL [--install]` prints or writes the script into the shell's XDG autoload directory, and Typer's shell classes are registered in `main()` only when `_DSA_COMPLETE` is set. Slugs, `--lang`, `--tag` and test ids (from the work dir's part) complete dynamically.
+- 2026-10-15: Several photos of one question: image sections that are adjacent are stitched after transcription by text alone (overlapping lines dropped; a code block still open at the end of a photo joined to the one at the top of the next, judged by bracket balance, a dangling Python header, or an indented first line). Per-photo transcripts stay untouched so `--resume` stitches identically, and the stitching is listed in the review notes. The vision prompt now says a photo may be a partial page.
+- 2026-10-15: Packaging: the version lives only in `src/dsajudge/__init__.py` (hatch reads it); the public sample problems are bundled into the wheel as `dsajudge/_fixtures/problems` and `find_problem` falls back to them outside a source checkout. Releases are tag-driven with PyPI trusted publishing (docs/RELEASING.md); `scripts/smoke_wheel.sh` runs in CI and before every upload.
