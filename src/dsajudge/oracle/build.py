@@ -32,13 +32,14 @@ from dsajudge.gen.plan import STRESS_GROUP, TestSpec, make_plan, stress_plan
 from dsajudge.gen.suite import PartGen, load_part_gen, spec_hash
 from dsajudge.gen.values import GenError
 from dsajudge.judge.cache import digest
-from dsajudge.judge.checkers import CheckerError, part_checker
+from dsajudge.judge.checkers import CheckerError, PartChecker, part_checker
 from dsajudge.judge.limits import MemoryBackend
 from dsajudge.judge.runner import RunLimits
 from dsajudge.judge.testset import (
     JudgeTest,
     OracleError,
     SourceRun,
+    agree,
     generated_dir,
     run_raw,
     run_source,
@@ -131,7 +132,7 @@ def build_part(
     notes: list[str] = []
 
     try:
-        check = part_checker(part)
+        check = part_checker(part, problem_dir, jcfg)
     except (CheckerError, FormatError) as e:
         raise BuildError(f"part {part.id}: {e}") from e
     if part.mode == "stdio":
@@ -214,7 +215,7 @@ def build_part(
                     run = runs[ref.file][t.id]
                     if run.status != "ok":
                         raise BuildError(_fail_message(f"ref {ref.file}", t, run))
-                    if t.id in expected and not check(expected[t.id], run.output):
+                    if t.id in expected and not agree(check, t, expected[t.id], run.output):
                         raise BuildError(
                             f"ref {ref.file} disagrees with {t.id}: got {short(run.output)}, "
                             f"expected {short(expected[t.id])}"
@@ -224,7 +225,7 @@ def build_part(
                 value = runs[first][t.id].output
                 for other in part.refs[1:]:
                     other_out = runs[other.file][t.id].output
-                    if not check(value, other_out):
+                    if not agree(check, t, value, other_out):
                         g = by_id.get(t.id)
                         shown = (
                             f"\n  input: {_describe_input(part, g.args)}"
@@ -410,7 +411,7 @@ def _brute_oracle(
     brute: SourceFile,
     samples: list[JudgeTest],
     gens: list[_Gen],
-    check: Callable[[Any, Any], bool],
+    check: PartChecker,
     cfg: Config,
     backend: MemoryBackend,
 ) -> tuple[dict[str, Any], set[str]]:
@@ -429,7 +430,7 @@ def _brute_oracle(
         run = runs[t.id]
         if run.status != "ok":
             raise BuildError(_fail_message(f"brute {brute.file}", t, run))
-        if not check(t.expected, run.output):
+        if not agree(check, t, t.expected, run.output):
             raise BuildError(
                 f"brute {brute.file} disagrees with {t.id}: got {short(run.output)}, "
                 f"expected {short(t.expected)}. Fix the brute or the sample."
@@ -452,7 +453,7 @@ def _stress(
     pg: PartGen,
     cfg: Config,
     backend: MemoryBackend,
-    check: Callable[[Any, Any], bool],
+    check: PartChecker,
     samples: list[JudgeTest],
     gens: list[_Gen],
     expected: dict[str, Any],
@@ -510,7 +511,7 @@ def _stress(
             if r.status != "ok":
                 raise BuildError(_fail_message(f"ref {ref.file}", t, r))
             ref_out = r.output
-        if not check(ref_out, b.output):
+        if not agree(check, t, ref_out, b.output):
             failing.append((t, ref_out, b.output))
     if not failing:
         return len(tests)
@@ -538,7 +539,7 @@ def _stress(
         return [
             rr[t.id].status == "ok"
             and bb[t.id].status == "ok"
-            and not check(rr[t.id].output, bb[t.id].output)
+            and not agree(check, t, rr[t.id].output, bb[t.id].output)
             for t in ts
         ]
 

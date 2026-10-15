@@ -93,7 +93,12 @@ def load_part_gen(problem_dir: Path, part: Part, plan: PlanConfig, cfg: JudgeCon
 
 def spec_hash(problem_dir: Path, part: Part, plan: PlanConfig) -> str:
     """Hash of everything that decides which tests get generated."""
-    scripts = [gen_script(problem_dir, part), validate_script(problem_dir, part)]
+    checker = problem_dir / f"part{part.id}" / "checker.py"
+    scripts = [
+        gen_script(problem_dir, part),
+        validate_script(problem_dir, part),
+        checker if checker.is_file() else None,
+    ]
     parts = {
         "gen_version": GEN_VERSION,
         "mode": part.mode,

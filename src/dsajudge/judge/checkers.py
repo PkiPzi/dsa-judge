@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+from dsajudge.config import JudgeConfig
+from dsajudge.judge.custom_checker import CheckerFailure, CustomChecker
 from dsajudge.model.canon import canon_equal, dumps, float_equal
 from dsajudge.model.render import get_text_checker
 from dsajudge.model.schema import Part
@@ -44,11 +47,53 @@ def check_unordered_deep(expected: Any, got: Any) -> bool:
     return canon_equal(_deep_sort(expected), _deep_sort(got))
 
 
-def part_checker(part: Part) -> Checker:
-    """The comparison for a part: canonical JSON values, or tokens of text in stdio mode."""
+class PartChecker:
+    """Decides whether an answer is right: canonical-value comparison, token comparison in
+    stdio mode, or a custom ``checker.py`` that also needs the test's input."""
+
+    def __init__(self, fn: Checker | None = None, custom: CustomChecker | None = None) -> None:
+        self.fn = fn
+        self.custom = custom
+
+    @property
+    def needs_args(self) -> bool:
+        return self.custom is not None
+
+    def verdict(self, expected: Any, got: Any, args: list[Any] | None = None) -> tuple[bool, str]:
+        if self.custom is not None:
+            if args is None:
+                raise CheckerError("a custom checker needs the test's input")
+            try:
+                return self.custom.check(args, expected, got)
+            except CheckerFailure as e:
+                raise CheckerError(str(e)) from e
+        assert self.fn is not None
+        return self.fn(expected, got), ""
+
+    def __call__(self, expected: Any, got: Any, args: list[Any] | None = None) -> bool:
+        return self.verdict(expected, got, args)[0]
+
+    def close(self) -> None:
+        if self.custom is not None:
+            self.custom.close()
+
+
+def part_checker(
+    part: Part, problem_dir: Path | None = None, jcfg: JudgeConfig | None = None
+) -> PartChecker:
+    """The comparison for a part; ``problem_dir`` and ``jcfg`` are needed for ``custom``."""
+    if part.checker == "custom":
+        if problem_dir is None or jcfg is None:
+            raise CheckerError("a custom checker needs the problem directory")
+        script = problem_dir / f"part{part.id}" / "checker.py"
+        if not script.is_file():
+            raise CheckerError(
+                f"part {part.id} uses checker: custom but part{part.id}/checker.py is missing"
+            )
+        return PartChecker(custom=CustomChecker(script, jcfg.python_exe()))
     if part.mode == "stdio":
-        return get_text_checker(part.checker)
-    return get_checker(part.checker)
+        return PartChecker(get_text_checker(part.checker))
+    return PartChecker(get_checker(part.checker))
 
 
 def get_checker(spec: str) -> Checker:
@@ -62,5 +107,5 @@ def get_checker(spec: str) -> Checker:
         eps = float(spec.split(":", 1)[1])
         return lambda e, g: float_equal(e, g, eps)
     if spec == "custom":
-        raise CheckerError("custom checkers (checker.py) arrive in Phase 3")
+        raise CheckerError("custom checkers need part_checker() with the problem directory")
     raise CheckerError(f"unknown checker {spec!r}")
