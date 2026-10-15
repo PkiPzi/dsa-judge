@@ -39,6 +39,8 @@ class LocalProviders:
             binary=cfg.ai.whisper_bin,
             model_dir=cfg.ai.whisper_model_dir,
             language=cfg.ai.whisper_language,
+            beam_size=cfg.ai.whisper_beam_size,
+            prompt=cfg.ai.whisper_prompt,
         )
 
 

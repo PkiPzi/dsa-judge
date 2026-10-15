@@ -72,6 +72,14 @@ class AIConfig(_Strict):
     whisper_model_dir: str = ""
     # Spoken language for whisper.cpp: "auto", "en", "hi", ...
     whisper_language: str = "auto"
+    # Greedy decoding (1) is ~4x faster than whisper.cpp's default beam of 5 on a GTX 1650.
+    whisper_beam_size: int = Field(default=1, ge=1, le=8)
+    # Romanized sample text: makes -l hi write Hinglish in Latin script instead of Devanagari.
+    # Empty disables it.
+    whisper_prompt: str = (
+        "Aaj main binary search ka problem solve kar raha hoon, "
+        "isme time complexity O(log n) hai, aur array sorted hona chahiye."
+    )
     timeout_s: float = 900.0
     num_ctx: int = 8192
     # Every AI-written artifact is verified by execution and retried with the error fed back.
