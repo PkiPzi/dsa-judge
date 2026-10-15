@@ -30,6 +30,17 @@ class Segmentation(_M):
     code: list[CodeBlockRef] = Field(default_factory=list)
 
 
+class BundleStart(_M):
+    line: int
+    title: str = ""
+
+
+class BundleScan(_M):
+    """Where, on one page of a photo bundle, a new question begins (none: the page continues)."""
+
+    starts: list[BundleStart] = Field(default_factory=list)
+
+
 class ParamOut(_M):
     name: str
     type: str

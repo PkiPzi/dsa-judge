@@ -527,6 +527,53 @@ def add(
 
 
 @app.command()
+def bundle(
+    files: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Photos (and voice notes) of several questions; none: file dialog"),
+    ] = None,
+    name: Annotated[str | None, typer.Option("--name", help="Name for this bundle")] = None,
+    resume: Annotated[
+        str | None, typer.Option("--resume", help="Continue an interrupted bundle (its name)")
+    ] = None,
+    unattended: Annotated[
+        bool,
+        typer.Option(
+            "--unattended",
+            help="No editor: accept drafts that pass the tool's own checks, keep the rest "
+            "for `dsa add --resume`",
+        ),
+    ] = False,
+) -> None:
+    """Add every question in a bundle of photos (statements and solutions together)."""
+    cfg = _config()
+    env = _intake_env(cfg)
+    paths = _files_or_pick(files, bool(resume))
+    items = _intake_call(
+        lambda: pipeline.bundle(env, name=name, files=paths, resume=resume, unattended=unattended)
+    )
+    assert isinstance(items, list)
+    table = Table("#", "problem", "status", "pages", "time", "note")
+    for i, it in enumerate(items, 1):
+        table.add_row(
+            str(i),
+            it.slug or it.title,
+            it.status,
+            ", ".join(it.pages),
+            f"{it.seconds:.0f} s",
+            escape(it.detail[:100]),
+        )
+    console.print(table)
+    for it in items:
+        if it.status == "needs-review":
+            console.print(f"review {it.slug}:  dsa add --resume {it.key}")
+        elif it.status == "failed":
+            console.print(f"retry {it.key}:  dsa bundle --resume {it.key.rsplit('-q', 1)[0]}")
+    if any(it.status == "failed" for it in items):
+        raise typer.Exit(1)
+
+
+@app.command()
 def followup(
     slug: Annotated[str, typer.Argument(help="Problem to extend", autocompletion=_slugs)],
     files: Annotated[

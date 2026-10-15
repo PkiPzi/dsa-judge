@@ -20,6 +20,7 @@ from __future__ import annotations
 import difflib
 import json
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,8 +36,10 @@ from dsajudge.ai.schemas import CodeOut, Extraction, Segmentation
 from dsajudge.config import Config, dsa_home
 from dsajudge.gen.suite import gen_script
 from dsajudge.intake import structure
+from dsajudge.intake.bundle import Group, group_pages, split_bundle
 from dsajudge.intake.draft import (
     append_parts,
+    examine,
     refresh_header,
     render_yaml,
     slugify,
@@ -49,6 +52,7 @@ from dsajudge.intake.stitch import stitch_pages
 from dsajudge.intake.transcribe import (
     assemble,
     code_blocks,
+    parse_sections,
     transcribe_one,
 )
 from dsajudge.judge.checkers import part_checker
@@ -103,6 +107,7 @@ class Outcome:
     parts: int
     reports: list[BuildReport] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    pending: str = ""  # unattended run stopped before the review; what must be fixed
 
 
 def inbox_dir(key: str) -> Path:
@@ -434,7 +439,14 @@ def _publish(env: Env, inbox: Path, state: State, stage: Path, first_part: int) 
         shutil.rmtree(old, ignore_errors=True)
 
 
-def _run(env: Env, inbox: Path, state: State, texts_ctx: str, prev_for_context: Any) -> Outcome:
+def _run(
+    env: Env,
+    inbox: Path,
+    state: State,
+    texts_ctx: str,
+    prev_for_context: Any,
+    unattended: bool = False,
+) -> Outcome:
     sections = (
         {
             rec.n: (inbox / "transcripts" / f"{rec.n:02d}.md").read_text(encoding="utf-8")
@@ -485,6 +497,20 @@ def _run(env: Env, inbox: Path, state: State, texts_ctx: str, prev_for_context: 
     if "assist" not in state.done:
         state.notes += _assist(env, stage, state, first_part)
         _mark(inbox, state, "assist")
+    if "review" not in state.done and unattended:
+        # The tool's own gate (valid draft, no [??] left) stands in for the editor; anything it
+        # flags is left for `--resume`, which opens the normal review.
+        findings, _ = examine(stage, first_part)
+        if findings.errors:
+            return Outcome(
+                state.slug,
+                first_part,
+                len(seg.parts),
+                notes=state.notes,
+                pending="; ".join(findings.errors),
+            )
+        state.notes.append("accepted without a human review (unattended run)")
+        _mark(inbox, state, "review")
     if "review" not in state.done:
         review_loop(stage, env.edit, first_new_part=first_part, notes=state.notes, say=env.say)
         _mark(inbox, state, "review")
@@ -531,6 +557,113 @@ def add(
         state = State(key=key, mode="add", slug=slug or "", sources=recs, done=["collect"])
         save_state(inbox, state)
     return _run(env, inbox, state, "", None)
+
+
+class BundleItem(BaseModel):
+    """One question found in a bundle, and what became of it."""
+
+    key: str
+    title: str
+    pages: list[str]
+    status: str = "pending"  # built | needs-review | failed
+    slug: str = ""
+    detail: str = ""
+    seconds: float = 0.0
+
+
+def _bundle_inbox(inbox: Path, state: State, sections: dict[int, str], g: Group, key: str) -> Path:
+    """A normal add-inbox holding only this question's pages, already transcribed."""
+    sub = inbox_dir(key)
+    if (sub / "state.json").exists():
+        return sub
+    by_n = {r.n: r for r in state.sources}
+    (sub / "raw").mkdir(parents=True)
+    (sub / "transcripts").mkdir()
+    recs: list[SourceRec] = []
+    texts: dict[int, str] = {}
+    for new_n, (n, text) in enumerate(group_pages(g, sections), 1):
+        rec = by_n[n]
+        shutil.copyfile(inbox / "raw" / rec.name, sub / "raw" / rec.name)
+        recs.append(rec.model_copy(update={"n": new_n}))
+        texts[new_n] = text
+        (sub / "transcripts" / f"{new_n:02d}.md").write_text(text, encoding="utf-8")
+    (sub / "transcript.md").write_text(assemble(recs, texts), encoding="utf-8")
+    sub_state = State(key=key, mode="add", sources=recs, done=["collect", "transcribe"])
+    save_state(sub, sub_state)
+    return sub
+
+
+def bundle(
+    env: Env,
+    *,
+    name: str | None,
+    files: list[Path],
+    resume: str | None = None,
+    unattended: bool = False,
+) -> list[BundleItem]:
+    """Photos of several questions in one go: split them, then run each question alone.
+
+    One question failing never stops the others; ``--resume NAME`` redoes only what is not built.
+    """
+    if resume:
+        inbox = inbox_dir(resume)
+        if not (inbox / "state.json").exists():
+            raise IntakeError(f"no bundle {resume!r} to resume (looked in {inbox.parent})")
+        state = load_state(inbox)
+    else:
+        key = name or f"bundle-{_timestamp_key()}"
+        inbox = inbox_dir(key)
+        if inbox.exists():
+            raise IntakeError(f"{inbox} exists: use --resume {key}, or remove it to start over")
+        state = State(
+            key=key, mode="bundle", sources=collect(inbox / "raw", files, []), done=["collect"]
+        )
+        save_state(inbox, state)
+    if "transcribe" not in state.done:
+        _transcribe(env, inbox, state)
+        _mark(inbox, state, "transcribe")
+    sections = parse_sections((inbox / "transcript.md").read_text(encoding="utf-8"))
+
+    split_path = inbox / "split.json"
+    if split_path.exists():
+        groups = [Group.model_validate(g) for g in json.loads(split_path.read_text())]
+    else:
+        env.say("finding the questions in the bundle")
+        groups = split_bundle(env.providers.text(env.cfg), sections, env.cfg.ai.max_attempts)
+        split_path.write_text(json.dumps([g.model_dump() for g in groups], indent=1) + "\n")
+    env.say(f"{len(groups)} question(s) found")
+
+    names = {r.n: r.original for r in state.sources}
+    items: list[BundleItem] = []
+    for i, g in enumerate(groups, 1):
+        key = f"{state.key}-q{i:02d}"
+        item = BundleItem(
+            key=key,
+            title=g.title,
+            pages=sorted({names[sp.section] for sp in g.spans}),
+        )
+        started = time.monotonic()
+        try:
+            sub = _bundle_inbox(inbox, state, sections, g, key)
+            sub_state = load_state(sub)
+            if "build" in sub_state.done:
+                item.status, item.slug = "built", sub_state.slug
+            else:
+                env.say(f"question {i}/{len(groups)}")
+                out = _run(env, sub, sub_state, "", None, unattended=unattended)
+                item.slug = out.slug
+                if out.pending:
+                    item.status, item.detail = "needs-review", out.pending[:400]
+                else:
+                    item.status = "built"
+        except Exception as e:  # one bad question must not stop the rest of the bundle
+            item.status, item.detail = "failed", f"{type(e).__name__}: {str(e)[:400]}"
+        item.seconds = round(time.monotonic() - started, 1)
+        items.append(item)
+        (inbox / "bundle.json").write_text(
+            json.dumps([x.model_dump() for x in items], indent=1) + "\n", encoding="utf-8"
+        )
+    return items
 
 
 def followup(

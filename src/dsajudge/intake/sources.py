@@ -77,9 +77,20 @@ def exif_or_mtime(path: Path) -> float:
     return path.stat().st_mtime
 
 
+COPY_SUFFIX = re.compile(r"^(.*?)(?: \((\d+)\))?(\.[^.]*)?$")
+
+
+def _name_key(name: str) -> tuple[list[object], int]:
+    """natural_key of the name, with a trailing " (N)" (WhatsApp, browsers) as a tie-break after
+    the plain name: "a.jpg" < "a (1).jpg" < "a (2).jpg" is the order they arrived in."""
+    m = COPY_SUFFIX.match(name)
+    assert m  # every string matches: all groups are optional or greedy
+    return natural_key(m.group(1) + (m.group(3) or "")), int(m.group(2) or 0)
+
+
 def order_sources(paths: list[Path]) -> list[Path]:
     """Ordered by file name (numbers compared as numbers), then EXIF/mtime."""
-    return sorted(paths, key=lambda p: (natural_key(p.name), exif_or_mtime(p)))
+    return sorted(paths, key=lambda p: (*_name_key(p.name), exif_or_mtime(p)))
 
 
 def read_clipboard() -> str | None:
