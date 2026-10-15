@@ -9,7 +9,7 @@ A local-first DSA practice judge.
 
 Nothing leaves your machine: AI runs on Ollama and whisper.cpp on localhost, and your problems live in `~/dsa-bank`, outside this repo.
 
-> Status: Phase 0 + 1 (skeleton and the function-mode judge for C++, Java and Python). Test generation (Phase 2) and AI intake (Phase 3) are not built yet. See [docs/PLAN.md](docs/PLAN.md) for the design and [docs/PROMPTS.md](docs/PROMPTS.md) for the build prompts.
+> Status: Phases 0-2 (skeleton, the function-mode judge for C++, Java and Python, and test generation with oracles). AI intake (Phase 3) is not built yet. See [docs/PLAN.md](docs/PLAN.md) for the design and [docs/PROMPTS.md](docs/PROMPTS.md) for the build prompts.
 
 ## Local setup (EndeavourOS / Arch)
 
@@ -42,7 +42,31 @@ dsa submit                     # full suite; AC unlocks the next part
 dsa submit --strict            # interview mode: verdict and pass count only
 dsa debug                      # re-run the last failing test (C++: ASan/UBSan, _GLIBCXX_DEBUG)
 dsa watch                      # re-run the samples on every save
-dsa show                       # parts, status, best times
+dsa show                       # parts, oracle, hidden tests, status, best times
+```
+
+## Building hidden tests
+
+```bash
+dsa build max-subarray            # generate tests, check refs, stress against the brute, set the TL
+dsa build max-subarray --part 2   # one part
+dsa rebuild max-subarray          # wipe generated tests and caches, build again from the seeds
+```
+
+`dsa submit` judges against what `dsa build` made (and says so if nothing was built). Tests come
+from the constraints in `problem.yaml` plus a reference solution: see
+[docs/CONSTRAINTS.md](docs/CONSTRAINTS.md) for the constraint language, the test plan, oracle modes
+and stdio mode. A build stops with an explanation when a sample breaks its constraints, a ref
+fails or disagrees with another ref, or a ref and the brute disagree (it prints the smallest
+failing input).
+
+Parts with a brute but no ref are **brute-only**: small tests are judged against the brute and a
+mismatch shows as `WA? (unverified oracle)`; the biggest tests only check time, memory and
+crashes. When you think the brute is wrong:
+
+```bash
+dsa dispute small_random/07 --note "brute misses the wrap-around"   # makes that test run-only
+dsa promote                       # after your AC: your solution becomes the ref, with full verdicts
 ```
 
 Your file holds only `class Solution { ... }`, exactly like LeetCode. The judge supplies headers
@@ -75,6 +99,12 @@ panel. Open the work dir itself with `DSA_EDITOR="code --profile Practice"` so t
 ```toml
 default_lang = "cpp"          # cpp | java | python
 dsa_command = "dsa"           # used in generated editor tasks
+
+[plan]                        # hidden-test plan (dsa build)
+small_random = 40
+medium_random = 10
+max = 6
+small_cap = 8                 # longest array in a "small" test
 
 [judge]
 memory_backend = "auto"       # auto | systemd | poll

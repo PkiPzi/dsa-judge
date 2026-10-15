@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -16,6 +17,8 @@ from rich.table import Table
 from dsajudge import __version__
 from dsajudge.config import Config, ConfigError, load_config
 from dsajudge.doctor import run_checks
+from dsajudge.gen.manifest import load_disputes, load_manifest, part_tests_dir
+from dsajudge.judge.limits import detect_backend, raise_stack_limit
 from dsajudge.judge.session import (
     JudgeError,
     Target,
@@ -30,6 +33,10 @@ from dsajudge.lang import get_language
 from dsajudge.model.canon import dumps
 from dsajudge.model.loader import ProblemError, load_problem
 from dsajudge.model.schema import LANGS, Lang, Problem
+from dsajudge.oracle.build import BuildError, BuildReport, build_part
+from dsajudge.oracle.modes import ModeError
+from dsajudge.oracle.modes import dispute as dispute_test
+from dsajudge.oracle.modes import promote as promote_part
 from dsajudge.store.bank import db_path, find_problem, import_problem, list_slugs
 from dsajudge.store.db import DB
 from dsajudge.store.workdir import WorkInfo, find_workdir, open_part
@@ -134,6 +141,134 @@ def import_cmd(
     console.print(f"imported [bold]{slug}[/]; start with `dsa open {slug}`")
 
 
+def _print_build(report: BuildReport) -> None:
+    counts = " · ".join(f"{g} {n}" for g, n in report.counts.items())
+    console.print(
+        f"[green]built[/] part {report.part} [dim]({report.seconds:.0f} s)[/]: "
+        f"oracle [bold]{report.oracle}[/] · {counts} · {report.stored} stored"
+    )
+    console.print(
+        f"  time limit {report.tl_base_ms:.0f} ms [dim]({escape(report.tl_source)})[/]"
+        + (
+            f" · stress {report.stress_cases} inputs, ref and brute agree"
+            if report.stress_cases
+            else ""
+        )
+    )
+    for note in report.notes:
+        console.print(f"  [dim]{escape(note)}[/]")
+    for w in report.warnings:
+        console.print(f"  [yellow]warning:[/] {escape(w)}")
+
+
+def _progress(pid: int) -> Callable[[str], None]:
+    def say(msg: str) -> None:
+        console.print(f"[dim]part {pid}: {escape(msg)}[/]")
+
+    return say
+
+
+def _build_parts(slug: str, part: int | None) -> None:
+    cfg = _config()
+    path, problem = _load(slug)
+    ids = [part] if part else [p.id for p in problem.parts]
+    for pid in ids:
+        if not 1 <= pid <= len(problem.parts):
+            fail(f"{slug} has parts 1..{len(problem.parts)}")
+    raise_stack_limit()
+    backend = detect_backend(cfg.judge.memory_backend)
+    failed = False
+    for pid in ids:
+        pt = problem.part(pid)
+        try:
+            report = build_part(path, problem, pt, cfg, backend, progress=_progress(pid))
+        except BuildError as e:
+            failed = True
+            console.print(f"[red]build failed[/] part {pid}:")
+            console.print(escape(str(e)))
+            continue
+        _print_build(report)
+    if failed:
+        raise typer.Exit(1)
+
+
+@app.command()
+def build(
+    slug: Annotated[str, typer.Argument(help="Problem slug")],
+    part: Annotated[int | None, typer.Option("--part", "-p", help="Only this part")] = None,
+) -> None:
+    """(Re)generate the hidden tests, check the refs and oracles, calibrate the time limit."""
+    _build_parts(slug, part)
+
+
+@app.command()
+def rebuild(
+    slug: Annotated[str, typer.Argument(help="Problem slug")],
+    part: Annotated[int | None, typer.Option("--part", "-p", help="Only this part")] = None,
+) -> None:
+    """Wipe the generated tests and caches for a problem and build again from the seeds."""
+    import shutil
+
+    from dsajudge.config import cache_dir
+
+    path, problem = _load(slug)
+    ids = [part] if part else [p.id for p in problem.parts]
+    for pid in ids:
+        if not 1 <= pid <= len(problem.parts):
+            fail(f"{slug} has parts 1..{len(problem.parts)}")
+        tdir = part_tests_dir(path, pid)
+        shutil.rmtree(tdir / "small", ignore_errors=True)
+        (tdir / "manifest.json").unlink(missing_ok=True)
+        shutil.rmtree(cache_dir() / "tests" / slug / f"part{pid}", ignore_errors=True)
+        shutil.rmtree(cache_dir() / "expected" / slug / f"part{pid}", ignore_errors=True)
+    _build_parts(slug, part)
+
+
+@app.command("dispute")
+def dispute_cmd(
+    test_id: Annotated[str, typer.Argument(help="Test id, e.g. small_random/07")],
+    note: Annotated[str, typer.Option("--note", help="Why you think the oracle is wrong")] = "",
+    clear: Annotated[bool, typer.Option("--clear", help="Withdraw an earlier dispute")] = False,
+) -> None:
+    """Brute-only parts: mark the oracle as suspect for one test."""
+    info = _here()
+    _, problem = _load(info.slug)
+    try:
+        msg = dispute_test(info.bank, problem.part(info.part), test_id, note, clear=clear)
+    except ModeError as e:
+        fail(str(e))
+    console.print(escape(msg))
+
+
+@app.command()
+def promote(
+    part: Annotated[
+        int | None, typer.Option("--part", "-p", help="Default: this work dir's")
+    ] = None,
+    lang: LangOpt = None,
+) -> None:
+    """Brute-only parts: make your accepted solution the ref, then rebuild with full verdicts."""
+    from dsajudge.store.workdir import part_dir
+
+    cfg = _config()
+    info = _here()
+    chosen = _lang(lang, info.lang)
+    pid = part or info.part
+    path, problem = _load(info.slug)
+    if not 1 <= pid <= len(problem.parts):
+        fail(f"{info.slug} has parts 1..{len(problem.parts)}")
+    src = part_dir(info.slug, pid) / get_language(chosen).sol_filename
+    raise_stack_limit()
+    backend = detect_backend(cfg.judge.memory_backend)
+    try:
+        with DB(db_path()) as db:
+            report = promote_part(path, problem, problem.part(pid), src, chosen, cfg, backend, db)
+    except ModeError as e:
+        fail(str(e))
+    console.print(f"[green]promoted[/] {src.name} to the ref of part {pid}")
+    _print_build(report)
+
+
 # ------------------------------------------------------------------ browsing
 
 
@@ -190,7 +325,8 @@ def show(
         unlocked = db.unlocked_part(slug, len(problem.parts))
         best = db.best_times(slug)
     console.print(f"[bold]{escape(problem.title)}[/]  [dim]{slug} · {', '.join(problem.tags)}[/]")
-    table = Table("part", "title", "status", "oracle", "refs", "TL", "best")
+    table = Table("part", "title", "status", "oracle", "refs", "tests", "TL", "best")
+    path, _ = find_problem(slug)
     for part in problem.parts:
         if part.id in solved:
             status = "[green]AC[/]"
@@ -198,17 +334,32 @@ def show(
             status = "open"
         else:
             status = "[dim]locked[/]"
+        if load_disputes(path, part.id):
+            status += " [yellow]needs-review[/]"
         refs = ", ".join(r.lang for r in part.refs) or "-"
         if part.brute:
             refs += f" (+brute {part.brute.lang})"
         b = best.get(part.id)
+        try:
+            manifest = load_manifest(path, part.id)
+        except Exception:
+            manifest = None
+        if manifest:
+            tests = f"{len(manifest.tests)} hidden"
+            oracle: str = manifest.oracle
+            tl = f"{manifest.tl_base_ms:.0f} ms"
+        else:
+            tests = "[dim]not built[/]"
+            oracle = part.derived_oracle() or "-"
+            tl = str(part.limits.time_ms)
         table.add_row(
             str(part.id),
             escape(part.title),
             status,
-            part.derived_oracle() or "-",
+            oracle,
             refs,
-            str(part.limits.time_ms),
+            tests,
+            tl,
             f"{b[1]:.0f} ms ({b[0]})" if b else "-",
         )
     console.print(table)

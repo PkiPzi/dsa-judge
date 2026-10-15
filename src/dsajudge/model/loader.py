@@ -68,3 +68,26 @@ def constraint_line(problem_dir: Path, part_id: int, param: str) -> int | None:
         return int(constraints.lc.key(param)[0]) + 1
     except Exception:
         return None
+
+
+def append_ref(problem_dir: Path, part_id: int, entry: dict[str, Any]) -> str:
+    """Add a ref to ``parts[part_id].refs`` keeping the file's comments. Returns the old text."""
+    from ruamel.yaml.comments import CommentedMap
+
+    path = problem_dir / "problem.yaml"
+    original = path.read_text(encoding="utf-8")
+    y = YAML(typ="rt")
+    y.preserve_quotes = True
+    y.width = 4096
+    data = y.load(original)
+    part = data["parts"][part_id - 1]
+    node = CommentedMap(entry)
+    node.fa.set_flow_style()
+    refs = part.get("refs")
+    if refs is None:
+        part["refs"] = [node]
+    else:
+        refs.append(node)
+    with path.open("w", encoding="utf-8") as fh:
+        y.dump(data, fh)
+    return original

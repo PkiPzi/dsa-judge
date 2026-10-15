@@ -233,12 +233,10 @@ def _run_process(
     if proc.poll() is None:
         kill_group(proc.pid)
     try:
-        _, status, rusage = os.wait4(proc.pid, 0)
+        _, status, _ = os.wait4(proc.pid, 0)
         proc.returncode = os.waitstatus_to_exitcode(status)
-        peak_kb = int(rusage.ru_maxrss)
     except ChildProcessError:
         proc.wait()
-        peak_kb = 0
     watchdog.stop()
     out_cap.join(timeout=2)
     err_cap.join(timeout=2)
@@ -262,7 +260,7 @@ def _run_process(
         stderr=stderr,
         failure=failure,
         failure_detail=detail,
-        peak_kb=max(peak_kb, watchdog.peak_kb),
+        peak_kb=watchdog.peak_kb,
     )
 
 

@@ -441,3 +441,31 @@ def test_validator_accepts_handwritten() -> None:
     specs = parse_constraints(part_of(params, constraints))
     assert validate_args(specs, [[1, 2, 3], 2]) == []
     assert validate_args(specs, [[1, 2, 3]]) == ["expected 2 argument(s), got 1"]
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_property_random_seeds_always_validate(name: str) -> None:
+    """Property test: any seed, size and flavor yields an input that passes the validator."""
+    from dsajudge.gen.plan import FLAVORS, TestSpec
+
+    params, constraints = CASES[name]
+    specs = parse_constraints(part_of(params, constraints))
+    gen = DslGenerator(specs, PLAN)
+    sizes = ("min", "min1", "tiny", "small", "medium")
+    for seed in range(250):
+        t = TestSpec(
+            id=f"p/{seed}",
+            group="prop",
+            index=seed,
+            size=sizes[seed % len(sizes)],
+            flavor=FLAVORS[(seed // 2) % len(FLAVORS)],
+            seed=seed * 7919 + 13,
+        )
+        try:
+            args = gen.generate(t)
+        except GenError as e:
+            # only the empty-range corner of dependent bounds may refuse to generate
+            assert "empty range" in str(e), (name, t, e)
+            continue
+        errs = validate_args(specs, args)
+        assert not errs, f"{name} seed={t.seed} {t.size}/{t.flavor}: {errs[0]}"

@@ -75,15 +75,14 @@ def run_program(
         watchdog.start()
         timed_out = False
         status = 0
-        rusage = None
         while True:
-            pid, status, rusage = os.wait4(proc.pid, os.WNOHANG)
+            pid, status, _ = os.wait4(proc.pid, os.WNOHANG)
             if pid:
                 break
             if time.monotonic() - t0 > wall:
                 timed_out = True
                 kill_group(proc.pid)
-                _, status, rusage = os.wait4(proc.pid, 0)
+                _, status, _ = os.wait4(proc.pid, 0)
                 break
             time.sleep(0.002)
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -93,7 +92,7 @@ def run_program(
     kill_group(proc.pid)  # stragglers holding the pipes
     proc.returncode = os.waitstatus_to_exitcode(status)
     stderr = _clean_stderr(err_cap.text())
-    peak_kb = max(int(rusage.ru_maxrss) if rusage else 0, watchdog.peak_kb)
+    peak_kb = watchdog.peak_kb  # not ru_maxrss: see limits.read_mem_kb
     time_ms = max(elapsed_ms - program.startup_ms, 0.0)
 
     if timed_out:

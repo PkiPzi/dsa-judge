@@ -62,12 +62,39 @@ def _matrix_candidates(v: list[list[Any]]) -> list[list[list[Any]]]:
     return out
 
 
-def candidates(args: list[Any]) -> list[list[Any]]:
+def _parallel_candidates(args: list[Any]) -> list[list[Any]]:
+    """Drop the same position from every 1-D list/string argument of equal length at once.
+
+    Needed for constraints like len(a) == len(b), where shrinking one array breaks validity.
+    """
+    flat = [
+        i
+        for i, v in enumerate(args)
+        if isinstance(v, list | str) and not (v and isinstance(v[0], list))
+    ]
     out: list[list[Any]] = []
+    for n in {len(args[i]) for i in flat}:
+        group = [i for i in flat if len(args[i]) == n]
+        if n < 2 or len(group) < 2:
+            continue
+        for pos in _positions(n):
+            cand = list(args)
+            for i in group:
+                cand[i] = args[i][:pos] + args[i][pos + 1 :]
+            out.append(cand)
+    return out
+
+
+def candidates(args: list[Any]) -> list[list[Any]]:
+    out: list[list[Any]] = _parallel_candidates(args)
     for i, v in enumerate(args):
-        if isinstance(v, list):
-            if v and all(isinstance(r, list) for r in v) and not any(x is None for x in v):
-                options: list[Any] = _matrix_candidates(v)
+        if isinstance(v, str):
+            options: list[Any] = ["".join(c) for c in _list_candidates(list(v))]
+            if len(v) > 1:
+                options = [x for x in options if x]
+        elif isinstance(v, list):
+            if v and all(isinstance(r, list) for r in v):
+                options = _matrix_candidates(v)
             else:
                 options = _list_candidates(v)
         else:

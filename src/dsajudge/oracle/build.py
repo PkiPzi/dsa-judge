@@ -246,7 +246,7 @@ def build_part(
             assert part.brute is not None
             say("no ref: using the brute as an unverified oracle")
             expected_b, unverified = _brute_oracle(
-                problem, problem_dir, part, part.brute, samples, gens, expected, check, cfg, backend
+                problem, problem_dir, part, part.brute, samples, gens, check, cfg, backend
             )
             expected.update(expected_b)
             notes.append(
@@ -273,7 +273,7 @@ def build_part(
         tl_base = float(min(max(3 * max(cpp_times), TL_MIN_MS), TL_MAX_MS))
         tl_source = "3 x slowest C++ ref test, clamped to 1-5 s"
     else:
-        tl_base, tl_source = float(TL_DEFAULT_MS), "default (no C++ ref to calibrate from)"
+        tl_base, tl_source = float(TL_DEFAULT_MS), "default: no C++ ref to calibrate from"
 
     # ---- weak tests
     if part.refs and part.brute:
@@ -410,7 +410,6 @@ def _brute_oracle(
     brute: SourceFile,
     samples: list[JudgeTest],
     gens: list[_Gen],
-    sample_expected: dict[str, Any],
     check: Callable[[Any, Any], bool],
     cfg: Config,
     backend: MemoryBackend,
@@ -605,9 +604,9 @@ def _weak_check(
     failure = next((r for r in outcome.results if r.status != "ok"), None)
     if failure is not None and failure.status == "tle" and tl > wall * 1000:
         return (
-            f"the time limit ({tl / 1000:.0f} s for the brute's language) is longer than the "
-            f"{plan.weak_check_cap_s:.0f} s this check waits, so we cannot tell whether a "
-            "brute-force solution would pass the max tests. Lower limits.time_ms if you want "
-            "slow solutions to fail."
+            f"weak tests?: the time limit is {tl / 1000:.0f} s for the brute's language, longer "
+            f"than the {plan.weak_check_cap_s:.0f} s this check waits, so a brute-force solution "
+            "may pass the max tests. The brute did not finish one in that time. Lower "
+            "limits.time_ms if you want slow solutions to fail."
         )
     return None
