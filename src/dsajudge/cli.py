@@ -17,6 +17,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from dsajudge import __version__
+from dsajudge import export as export_mod
 from dsajudge import review as review_mod
 from dsajudge import stats as stats_mod
 from dsajudge.ai import factory as ai_factory
@@ -357,6 +358,81 @@ def promote(
         fail(str(e))
     console.print(f"[green]promoted[/] {src.name} to the ref of part {pid}")
     _print_build(report)
+
+
+@app.command("export")
+def export_cmd(
+    slug: Annotated[str, typer.Argument(help="Problem slug", autocompletion=_slugs)],
+    part: Annotated[
+        int | None, typer.Option("--part", "-p", help="Part number (default: the only stdio part)")
+    ] = None,
+    fmt: Annotated[
+        str, typer.Option("--format", "-f", help="hackerrank, hackerearth or both")
+    ] = "hackerrank",
+    count: Annotated[
+        str,
+        typer.Option(
+            "--count",
+            "-n",
+            help="How many tests: a number, 'all', or 'auto' (the platform's own "
+            "guidance: 15 for HackerRank, 10 for HackerEarth)",
+        ),
+    ] = "auto",
+    out: Annotated[
+        Path | None, typer.Option("--out", "-o", help="Directory (default: $DSA_HOME/export/SLUG)")
+    ] = None,
+) -> None:
+    """Export a stdio part's tests as a HackerRank / HackerEarth test-case zip."""
+    from dsajudge.config import dsa_home
+
+    cfg = _config()
+    path, problem = _load(slug)
+    formats = list(export_mod.FORMATS) if fmt == "both" else [fmt]
+    for f in formats:
+        if f not in export_mod.FORMATS:
+            fail(f"unknown format {f!r}; use hackerrank, hackerearth or both")
+    wanted: int | str | None
+    if count == "all":
+        wanted = None
+    elif count == "auto":
+        wanted = "auto"
+    else:
+        try:
+            wanted = int(count)
+        except ValueError:
+            fail("--count takes a number, 'all' or 'auto'")
+        if wanted < 1:
+            fail("--count must be at least 1")
+    if part is None:
+        stdio = [p.id for p in problem.parts if p.mode == "stdio"]
+        if len(stdio) != 1:
+            fail(
+                f"{slug} has {len(stdio)} stdio parts; pick one with --part"
+                if stdio
+                else f"{slug} has no stdio part: only `mode: stdio` parts can be exported"
+            )
+        part = stdio[0]
+    if not 1 <= part <= len(problem.parts):
+        fail(f"{slug} has parts 1..{len(problem.parts)}")
+    raise_stack_limit()
+    backend = detect_backend(cfg.judge.memory_backend)
+    out_dir = out or dsa_home() / "export" / slug
+    for f in formats:
+        try:
+            res = export_mod.export_part(
+                path, problem, problem.part(part), cfg, backend, f, out_dir, count=wanted
+            )
+        except export_mod.ExportError as e:
+            fail(str(e), 1)
+        console.print(
+            f"[green]exported[/] {len(res.tests)} test(s) for {f}: {escape(str(res.zip_path))}",
+            soft_wrap=True,
+        )
+        console.print(f"  notes: {escape(str(res.notes_path))}", soft_wrap=True)
+        for _id, why in res.skipped:
+            console.print(f"  [dim]skipped {escape(_id)}: {escape(why)}[/]")
+        for w in res.warnings:
+            console.print(f"  [yellow]warning:[/] {escape(w)}")
 
 
 # ------------------------------------------------------------------ intake
