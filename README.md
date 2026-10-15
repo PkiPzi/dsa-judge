@@ -9,7 +9,7 @@ A local-first DSA practice judge.
 
 Nothing leaves your machine: AI runs on Ollama and whisper.cpp on localhost, and your problems live in `~/dsa-bank`, outside this repo.
 
-> Status: Phases 0-2 (skeleton, the function-mode judge for C++, Java and Python, and test generation with oracles). AI intake (Phase 3) is not built yet. See [docs/PLAN.md](docs/PLAN.md) for the design and [docs/PROMPTS.md](docs/PROMPTS.md) for the build prompts.
+> Status: Phases 0-3 (skeleton, the function-mode judge, test generation with oracles, and local AI intake). Phase 3's real-model paths are only exercised on your machine: see [LOCAL_TESTING.md](LOCAL_TESTING.md). See [docs/PLAN.md](docs/PLAN.md) for the design and [docs/PROMPTS.md](docs/PROMPTS.md) for the build prompts.
 
 ## Local setup (EndeavourOS / Arch)
 
@@ -30,6 +30,26 @@ uv run dsa doctor
 # put `dsa` on your PATH (editor tasks and :!dsa run need it)
 uv tool install --editable .
 ```
+
+## Adding questions
+
+```bash
+dsa add statement.jpg voice-note.m4a friend.cpp --slug two-pass   # any mix; --clip / --text also work
+dsa followup two-pass later-photo.jpg                               # appends part N+1
+dsa ref two-pass friend2.java --part 2                              # attach another reference solution
+dsa doctor --models                                                 # which local models are usable
+```
+
+`dsa add` runs collect, transcribe (photos on a local vision model, voice on whisper.cpp), a
+segmentation pass and a per-part extraction pass (both JSON-schema constrained), the constraint
+DSL, and writes missing pieces (a brute-force solution; `gen.py` for guarantees; `checker.py`
+for problems with several valid answers). Every AI-written file is **verified by execution** and
+retried with the error fed back. Then `$EDITOR` opens `problem.yaml` with a checklist header
+(constraint numbers, signature types, samples, which code is a ref or brute for which part, any
+`[??]`); the review repeats until the draft validates and nothing is unreadable. Only then are
+the hidden tests built. Code from a photo that doesn't compile or pass the samples gets a
+proposed fix, shown as a diff, which is applied only if you confirm. Everything goes through the
+inbox (`$DSA_HOME/inbox/NAME/`), so `dsa add --resume NAME` continues after a crash.
 
 ## Practice loop
 
@@ -76,7 +96,7 @@ and Python's `typing`/`collections`/`heapq` names. Use `--lang java` or `--lang 
 the default.
 
 In a source checkout, `dsa open max-subarray` copies the public fixture into your bank the
-first time. `dsa import DIR` copies any problem directory in. (`dsa add` arrives in Phase 3.)
+first time. `dsa import DIR` copies any problem directory in.
 
 ### nvim
 
@@ -99,6 +119,13 @@ panel. Open the work dir itself with `DSA_EDITOR="code --profile Practice"` so t
 ```toml
 default_lang = "cpp"          # cpp | java | python
 dsa_command = "dsa"           # used in generated editor tasks
+
+[ai]                          # intake (Phase 3); Ollama must stay on loopback
+ollama_url = "http://127.0.0.1:11434"
+[ai.models]
+text = "qwen2.5-coder:3b"
+vision = "qwen2.5vl:3b"
+whisper = "small"
 
 [plan]                        # hidden-test plan (dsa build)
 small_random = 40
