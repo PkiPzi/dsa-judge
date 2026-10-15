@@ -1,0 +1,60 @@
+"""Load and check problem.yaml files."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from pydantic import ValidationError
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+
+from dsajudge.model.schema import Problem
+
+
+class ProblemError(Exception):
+    pass
+
+
+def _yaml() -> YAML:
+    y = YAML(typ="safe", pure=True)
+    return y
+
+
+def read_yaml(path: Path) -> Any:
+    try:
+        return _yaml().load(path.read_text(encoding="utf-8"))
+    except YAMLError as e:
+        raise ProblemError(f"{path}: invalid YAML: {e}") from e
+
+
+def format_validation_error(path: Path, e: ValidationError) -> str:
+    lines = [f"{path}: invalid problem file"]
+    for err in e.errors():
+        loc = ".".join(str(x) for x in err["loc"])
+        msg = err["msg"].removeprefix("Value error, ")
+        lines.append(f"  {loc or '<root>'}: {msg}")
+    return "\n".join(lines)
+
+
+def load_problem(problem_dir: Path, *, check_files: bool = True) -> Problem:
+    path = problem_dir / "problem.yaml"
+    if not path.exists():
+        raise ProblemError(f"{path} not found")
+    data = read_yaml(path)
+    if not isinstance(data, dict):
+        raise ProblemError(f"{path}: expected a mapping at the top level")
+    try:
+        problem = Problem.model_validate(data)
+    except ValidationError as e:
+        raise ProblemError(format_validation_error(path, e)) from e
+    if check_files:
+        missing: list[str] = []
+        for part in problem.parts:
+            files = [part.statement] + [r.file for r in part.refs]
+            if part.brute:
+                files.append(part.brute.file)
+            missing += [f for f in files if not (problem_dir / f).is_file()]
+        if missing:
+            raise ProblemError(f"{path}: missing files: {', '.join(missing)}")
+    return problem

@@ -1,0 +1,8 @@
+# Expected `dsa submit` verdict for each variant, in every language, once the large manual
+# cases exist (tests/make_large_cases.py).
+correct: AC
+wrong: WA
+slow: TLE
+crash: RE
+deep_recursion: AC
+memory_hog: MLE
