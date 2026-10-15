@@ -9,6 +9,7 @@ part, and any remaining ``[??]``.
 from __future__ import annotations
 
 import io
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,18 +38,22 @@ def _yaml() -> YAML:
     return y
 
 
+def _short(obj: Any, limit: int = 90) -> bool:
+    return len(json.dumps(obj, default=str)) <= limit
+
+
 def to_node(obj: Any, *, top: bool = True) -> Any:
-    """dict/list -> ruamel nodes; leaf containers (no nested containers) use flow style."""
+    """dict/list -> ruamel nodes; small containers use flow style so samples stay one line."""
     if isinstance(obj, dict):
         m = CommentedMap()
         for k, v in obj.items():
             m[k] = to_node(v, top=False)
-        if not top and all(not isinstance(v, dict | list) for v in obj.values()):
+        if not top and _short(obj):
             m.fa.set_flow_style()
         return m
     if isinstance(obj, list):
         s = CommentedSeq(to_node(v, top=False) for v in obj)
-        if all(not isinstance(v, dict | list) for v in obj):
+        if not top and _short(obj):
             s.fa.set_flow_style()
         return s
     return obj

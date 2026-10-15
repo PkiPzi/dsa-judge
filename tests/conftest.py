@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,22 @@ REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / "fixtures"
 FIXTURE_PROBLEM = FIXTURES / "problems" / "max-subarray"
 SOLUTIONS = FIXTURES / "solutions" / "max-subarray"
+
+
+@pytest.fixture(autouse=True)
+def no_outbound_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLAUDE.md: no network in tests. Loopback and unix sockets stay allowed."""
+    real_connect = socket.socket.connect
+
+    def guarded(self: socket.socket, address: Any) -> None:
+        if self.family == socket.AF_UNIX:
+            return real_connect(self, address)
+        host = address[0] if isinstance(address, tuple) else str(address)
+        if str(host) not in ("127.0.0.1", "::1", "localhost") and not str(host).startswith("127."):
+            raise AssertionError(f"test tried to reach {host!r}: no network in tests")
+        return real_connect(self, address)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded)
 
 
 @pytest.fixture(scope="session")

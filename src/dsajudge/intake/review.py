@@ -50,10 +50,12 @@ def review_loop(
         refresh_header(problem_dir, first_new_part, notes)
         _, problem = examine(problem_dir, first_new_part)
         files = [problem_dir / "problem.yaml", *draft_files(problem_dir, problem, first_new_part)]
+        path = problem_dir / "problem.yaml"
+        before = path.read_text(encoding="utf-8")
         if edit(files) != 0:
             raise ReviewAborted("the editor exited with an error; the draft is kept for --resume")
-        path = problem_dir / "problem.yaml"
         if not path.exists() or not path.read_text(encoding="utf-8").strip():
+            path.write_text(before, encoding="utf-8")  # aborting must not destroy the draft
             raise ReviewAborted("problem.yaml was emptied: review aborted, the draft is kept")
         findings, _ = examine(problem_dir, first_new_part)
         if not findings.errors:

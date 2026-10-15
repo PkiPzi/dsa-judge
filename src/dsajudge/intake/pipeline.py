@@ -513,11 +513,11 @@ def add(
             raise IntakeError(f"{resume} was already built and added as {state.slug!r}")
     else:
         key = slug or _timestamp_key()
+        if slug and (problems_dir() / slug / "problem.yaml").exists():
+            raise IntakeError(f"problem {slug!r} already exists; pick another --slug")
         inbox = inbox_dir(key)
         if inbox.exists():
             raise IntakeError(f"{inbox} exists: use --resume {key}, or remove it to start over")
-        if slug and (problems_dir() / slug).exists():
-            raise IntakeError(f"problem {slug!r} already exists; pick another --slug")
         recs = collect(inbox / "raw", files, texts)
         state = State(key=key, mode="add", slug=slug or "", sources=recs, done=["collect"])
         save_state(inbox, state)
@@ -533,6 +533,8 @@ def followup(
     resume: bool = False,
 ) -> Outcome:
     path = problems_dir() / slug
+    if not (path / "problem.yaml").is_file():
+        raise IntakeError(f"no problem {slug!r} in {problems_dir()} (see `dsa list`)")
     try:
         problem = load_problem(path)
     except ProblemError as e:
@@ -603,6 +605,8 @@ def attach_ref(
     agree with the existing oracle on every test, or it is rejected with the first
     disagreement shown and nothing changes."""
     path = problems_dir() / slug
+    if not (path / "problem.yaml").is_file():
+        raise IntakeError(f"no problem {slug!r} in {problems_dir()} (see `dsa list`)")
     try:
         problem = load_problem(path)
         part = problem.part(part_no)
@@ -659,9 +663,7 @@ def attach_ref(
         if original is not None:
             (path / "problem.yaml").write_text(original, encoding="utf-8")
         dest.unlink(missing_ok=True)
-        if isinstance(e, BuildError):
-            raise IntakeError(f"{rel} was rejected; nothing was changed:\n{e}") from e
-        raise
+        raise IntakeError(f"{rel} was rejected; nothing was changed:\n{e}") from e
 
 
 __all__ = [
