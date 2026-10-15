@@ -191,6 +191,7 @@ def _extract(
     seg: Segmentation,
     prev: tuple[Extraction, dict[str, Any], int] | None,
     base_part: int,
+    sections: dict[int, str] | None = None,
 ) -> list[Extracted]:
     edir = inbox / "extraction"
     edir.mkdir(exist_ok=True)
@@ -206,6 +207,14 @@ def _extract(
             env.say(f"extracting part {part_id}")
             context = structure.follow_up_context(*prev) if prev else ""
             ext = structure.extract_part(llm, part_id, sp.text, context, attempts)
+            refs = [
+                code_blocks((sections or {}).get(c.section, ""))[c.block - 1][1]
+                for c in seg.code
+                if c.part == sp.part
+                and c.role == "ref"
+                and c.block <= len(code_blocks((sections or {}).get(c.section, "")))
+            ]
+            ext.method = structure.method_from_code(ext.method, refs)
             constraints: dict[str, Any] = {}
             error = ""
             try:
@@ -469,7 +478,7 @@ def _run(
     if state.mode == "add" and not state.slug:
         state.slug = _free_slug(slugify(seg.title))
         save_state(inbox, state)
-    extracted = _extract(env, inbox, seg, prev_for_context, state.base_part)
+    extracted = _extract(env, inbox, seg, prev_for_context, state.base_part, sections)
     _mark(inbox, state, "extract")
 
     stage = inbox / "draft"

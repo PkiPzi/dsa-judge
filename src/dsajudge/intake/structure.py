@@ -80,6 +80,116 @@ def merge_false_followups(seg: Segmentation) -> Segmentation:
     return Segmentation(title=seg.title, parts=parts, code=code)
 
 
+_TYPE_TOKEN = r"[\w:<>,&*\[\]]+"
+METHOD_DEFS = (
+    re.compile(r"^[ \t]*def\s+(\w+)\s*\(\s*self\b", re.MULTILINE),  # python
+    re.compile(  # c++ / java: "<modifiers> <type> name(args) {" (also const / throws)
+        rf"^[ \t]*(?:(?:public|private|protected|static)\s+)*{_TYPE_TOKEN}(?:[ \t]+{_TYPE_TOKEN})*"
+        r"[ \t]+[&*]?(\w+)\s*\([^;{}]*\)\s*(?:const\s*)?(?:throws\s+[\w, ]+)?\{",
+        re.MULTILINE,
+    ),
+)
+NOT_METHODS = {
+    "if",
+    "for",
+    "while",
+    "switch",
+    "catch",
+    "return",
+    "else",
+    "sizeof",
+    "main",
+    "Solution",
+}
+
+
+def method_from_code(current: str, codes: list[str]) -> str:
+    """The method the solution code defines, when the extracted name appears nowhere in it.
+
+    The model reads the method name off the statement; the photographed solution is the truth
+    (a model that writes ``sumEvenElements`` for code defining ``sumEven`` breaks every build).
+    Only an unambiguous case is changed: the name is absent and the code defines one method.
+    """
+    if any(re.search(rf"\b{re.escape(current)}\s*\(", c) for c in codes):
+        return current
+    found = {
+        m.group(1)
+        for c in codes
+        for rx in METHOD_DEFS
+        for m in rx.finditer(c)
+        if m.group(1) not in NOT_METHODS and not m.group(1).startswith("__")
+    }
+    return found.pop() if len(found) == 1 else current
+
+
+BOUND_LINE = re.compile(r"\s*(?:<=|<|\u2264)\s*")
+LENGTH_OF = re.compile(r"^(?:(\w+)\.(?:length|size)(?:\(\))?|len\((\w+)\))$")
+ELEMENT_OF = re.compile(r"^(\w+)\[\w+\]$")
+CHARSETS = (
+    ("lowercase", "lowercase"),
+    ("uppercase", "uppercase"),
+    ("alphanumeric", "alnum"),
+    ("digits", "digits"),
+    ("english letters", "letters"),
+    ("letters", "letters"),
+    ("binary", "binary"),
+)
+
+
+def _bound(text: str) -> str:
+    return re.sub(r"\^\{(\d+)\}", r"^\1", text.strip().replace(" ", ""))
+
+
+def constraints_from_text(ext: Extraction) -> dict[str, Any] | None:
+    """The constraint DSL read straight off ``lo <= nums.length <= hi`` style lines, for the
+    simple parameter types; None when something needed is missing (the model's answer, or a
+    human review, then decides). Callers must still validate the result."""
+    lens: dict[str, list[str]] = {}
+    ranges: dict[str, list[str]] = {}  # element / scalar bounds
+    for line in ext.constraints_text:
+        pieces = [p for p in BOUND_LINE.split(line.strip().rstrip(".")) if p]
+        if len(pieces) == 3:
+            lo, mid, hi = (_bound(p) for p in pieces)
+        elif (
+            len(pieces) == 2 and re.match(r"^[-+\w]", pieces[0].strip()) and BOUND_LINE.search(line)
+        ):
+            first = _bound(pieces[0])
+            if re.fullmatch(r"[-+]?[\d^e*]+", first):  # "lo <= x"
+                lo, mid, hi = first, _bound(pieces[1]), ""
+            else:  # "x <= hi"
+                lo, mid, hi = "", first, _bound(pieces[1])
+        else:
+            continue
+        if m := LENGTH_OF.match(mid):
+            lens[m.group(1) or m.group(2)] = [lo or "1", hi]
+        elif m := ELEMENT_OF.match(mid):
+            ranges[m.group(1)] = [lo, hi]
+        elif re.fullmatch(r"\w+", mid):
+            ranges[mid] = [lo, hi]
+    text = (ext.statement + " " + " ".join(ext.constraints_text)).lower()
+    charset = next((cs for word, cs in CHARSETS if word in text), None)
+    out: dict[str, Any] = {}
+    for p in ext.params:
+        if p.type == "bool":
+            continue
+        if p.type in ("int", "long", "double"):
+            if p.name not in ranges or "" in ranges[p.name]:
+                return None
+            out[p.name] = {"range": ranges[p.name]}
+        elif p.type == "string":
+            if p.name not in lens or "" in lens[p.name] or not charset:
+                return None
+            out[p.name] = {"len": lens[p.name], "charset": charset}
+        elif p.type in ("int[]", "long[]", "double[]"):
+            rng = ranges.get(p.name)
+            if p.name not in lens or "" in lens[p.name] or not rng or "" in rng:
+                return None
+            out[p.name] = {"len": lens[p.name], "each": rng}
+        else:
+            return None
+    return out
+
+
 def part_model(ext: Extraction, constraints: dict[str, Any], part_id: int) -> Part:
     """The Part this extraction describes (validates types, samples against the signature)."""
     return Part.model_validate(part_data(ext, constraints, part_id, f"part{part_id}/statement.md"))
@@ -171,17 +281,25 @@ def fill_constraints(llm: LLM, ext: Extraction, part_no: int, attempts: int) -> 
                 )
         return None
 
-    out = ask_structured(
-        llm,
-        "fill_constraints",
-        ConstraintsOut,
-        {
-            "signature": signature_line(ext),
-            "constraints": "\n".join(ext.constraints_text),
-            "feedback": "",
-        },
-        attempts=attempts,
-        check=check,
-        feedback_var="feedback",
-    )
+    try:
+        out = ask_structured(
+            llm,
+            "fill_constraints",
+            ConstraintsOut,
+            {
+                "signature": signature_line(ext),
+                "constraints": "\n".join(ext.constraints_text),
+                "feedback": "",
+            },
+            attempts=attempts,
+            check=check,
+            feedback_var="feedback",
+        )
+    except AIError:
+        # the model could not do it: read the plain "lo <= x <= hi" lines in code, but only
+        # accept the result if it passes the very same checks
+        guess = constraints_from_text(ext)
+        if guess is not None and check(ConstraintsOut(constraints=guess)) is None:
+            return guess
+        raise
     return out.constraints
