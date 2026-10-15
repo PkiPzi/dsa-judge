@@ -13,6 +13,8 @@ Nothing leaves your machine: AI runs on Ollama and whisper.cpp on localhost, and
 
 ## Local setup (EndeavourOS / Arch)
 
+Full setup and troubleshooting: [docs/SETUP_AND_DEBUG.md](docs/SETUP_AND_DEBUG.md).
+
 ```bash
 # toolchains for the judge
 sudo pacman -S --needed gcc jdk-openjdk python uv
