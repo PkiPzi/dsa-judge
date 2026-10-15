@@ -234,8 +234,15 @@ All of these are execution-verified, retried with error feedback, and capped at 
 ### 7.3 Provider abstraction
 ```python
 class LLM(Protocol):
-    def complete(self, prompt: str, *, system: str | None = None,
-                 schema: dict | None = None, images: list[Path] | None = None) -> str: ...
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        schema: dict | None = None,
+        images: list[Path] | None = None,
+    ) -> str: ...
+
 
 class Transcriber(Protocol):
     def transcribe(self, audio: Path) -> str: ...
@@ -321,3 +328,11 @@ Stack: Python ≥ 3.11, Typer, pydantic v2, ruamel.yaml (round-trips comments du
 
 ## 13. Decisions log
 Append a dated line here whenever a design decision in this file changes, with the reason.
+- 2026-10-15: Drivers stream one JSON result line per test over a dedicated fd (passed as argv[1]), so user stdout can't corrupt results and the runner always knows which test is running. A process that stops answering for `TL × 1.5 + 0.5 s` is killed and the running test gets TLE without a re-run. A process that dies is attributed to the running test, which is re-run alone only if earlier tests ran in the same process. With `--all`, the remaining tests continue in a new batch. This refines §5.2's "re-run the remaining tests one per process", which the streaming makes unnecessary.
+- 2026-10-15: Phase 1 expected outputs: samples use the yaml; `partN/tests/manual/*.in.json` get theirs by running the refs through the same drivers (refs must agree with each other and with every sample), or with no ref the brute on inputs up to 20 KB (verdicts are `WA?`). Bigger inputs are run-only. Results and C++ ref timings for auto TL are cached in `$XDG_CACHE_HOME/dsajudge/expected/`, keyed by input and source hashes. No `.out.json` files are committed. Phase 2's manifest replaces this.
+- 2026-10-15: Without systemd, an RSS watchdog polls `/proc/<pid>/status` every 10 ms and kills the process group above `memory_mb + overhead` (C++ 16 MB, Python 32 MB, Java 192 MB for JVM non-heap; Java's heap is capped by `-Xmx{memory_mb}m`). Per-test VmHWM above the same bound is MLE after the fact. The watchdog also runs under systemd as a second check.
+- 2026-10-15: RLIMIT_STACK is raised in the judge process itself (inherited by children) instead of in `preexec_fn`, which is unsafe with the runner's threads.
+- 2026-10-15: Python solutions run under the judge's own interpreter (`sys.executable`, ≥ 3.11) by default; `judge.python` in config overrides it.
+- 2026-10-15: Added `dsa import DIR`, since `dsa add` arrives in Phase 3. In a source checkout, `dsa open`/`dsa show` copy a public fixture into the bank when the slug is missing, so `DSA_HOME=/tmp/x dsa open max-subarray` works.
+- 2026-10-15: Java gets LeetCode's implicit imports (`java.util.*`, `java.util.function.*`, `java.util.stream.*`) prefixed onto line 1 of the copied `Solution.java`, so compiler line numbers still match the user's file. A null `ListNode`/`TreeNode` return serializes as `[]` in every language.
+- 2026-10-15: C++ builds use a precompiled `<bits/stdc++.h>` cached in `$XDG_CACHE_HOME/dsajudge/pch/` (one-time ~15 s build, then ~1.3 s compiles instead of ~4 s).

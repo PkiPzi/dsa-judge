@@ -1,0 +1,153 @@
+"""Java backend: javac + generated Main.java with a big-stack thread."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from dsajudge.config import JudgeConfig
+from dsajudge.judge.cache import build_cached, run_tool, tool_version
+from dsajudge.lang.base import Built
+from dsajudge.lang.codegen import render, static, uses
+from dsajudge.model.schema import Lang, Part
+from dsajudge.model.types import TypeNode, java_list_depth, java_type
+
+# Prefixed onto line 1 of the user's file so line numbers in errors stay right.
+IMPLICIT_IMPORTS = "import java.util.*;import java.util.function.*;import java.util.stream.*;"
+
+_ARR_FN = {
+    "int": "intArr",
+    "long": "longArr",
+    "double": "doubleArr",
+    "bool": "boolArr",
+    "char": "charArr",
+    "string": "strArr",
+}
+_SCALAR_FN = {
+    "int": "toInt",
+    "long": "toLong",
+    "double": "toDouble",
+    "bool": "toBool",
+    "char": "toChar",
+    "string": "toStr",
+}
+
+
+def java_conv(t: TypeNode, list_depth: int, expr: str) -> str:
+    """Java expression converting parsed JSON ``expr`` to the Java type of ``t``."""
+    if t.kind == "listnode":
+        return f"DsaJson.listNode({expr})"
+    if t.kind == "treenode":
+        return f"DsaJson.treeNode({expr})"
+    if t.kind == "scalar":
+        return f"DsaJson.{_SCALAR_FN[t.base]}({expr})"
+    if list_depth == 0:
+        suffix = "2" if t.depth == 2 else ""
+        return f"DsaJson.{_ARR_FN[t.base]}{suffix}({expr})"
+    var = f"x{t.depth}"
+    inner = java_conv(t.elem(), list_depth - 1, var)
+    return f"DsaJson.list({expr}, {var} -> {inner})"
+
+
+def _ctx(slug: str, part: Part) -> dict[str, Any]:
+    sig = part.sig
+    params = []
+    for i, p in enumerate(sig.params):
+        override = sig.override("java", p.name)
+        t = p.tnode
+        params.append(
+            {
+                "name": p.name,
+                "var": f"a{i}",
+                "java_type": java_type(t, override),
+                "java_conv": java_conv(t, java_list_depth(t, override), f"inp.get({i})"),
+            }
+        )
+    types = [p.type for p in sig.params] + [sig.returns]
+    out_var = ""
+    if sig.ret.is_void:
+        idx = [p.name for p in sig.params].index(sig.output_param or "")
+        out_var = f"a{idx}"
+    writer = {"listnode": "writeListNode", "treenode": "writeTreeNode"}.get(
+        sig.output_type.kind, "write"
+    )
+    return {
+        "writer": writer,
+        "slug": slug,
+        "part_id": part.id,
+        "title": part.title,
+        "method": sig.method,
+        "params": params,
+        "params_decl": ", ".join(f"{p['java_type']} {p['name']}" for p in params),
+        "call_args": ", ".join(p["var"] for p in params),
+        "ret_java": java_type(sig.ret, sig.override("java", "return")),
+        "is_void": sig.ret.is_void,
+        "output_var": out_var,
+        "uses_listnode": uses(types, "ListNode"),
+        "uses_treenode": uses(types, "TreeNode"),
+    }
+
+
+class Java:
+    name: Lang = "java"
+    ext = "java"
+    sol_filename = "Solution.java"
+
+    def stub(self, slug: str, part: Part) -> str:
+        return render("java_stub.java.j2", **_ctx(slug, part))
+
+    def driver_files(self, slug: str, part: Part) -> dict[str, str]:
+        return {
+            "Main.java": render("Main.java.j2", **_ctx(slug, part)),
+            "DsaJson.java": static("DsaJson.java"),
+            "ListNode.java": static("ListNode.java"),
+            "TreeNode.java": static("TreeNode.java"),
+        }
+
+    def build(
+        self, src: Path, slug: str, part: Part, cfg: JudgeConfig, *, debug: bool = False
+    ) -> Built:
+        files = self.driver_files(slug, part)
+        files["Solution.java"] = IMPLICIT_IMPORTS + src.read_text(encoding="utf-8")
+
+        def compile_fn(d: Path) -> None:
+            run_tool(
+                [
+                    cfg.javac,
+                    "-encoding",
+                    "UTF-8",
+                    "-nowarn",
+                    "-d",
+                    "classes",
+                    *(
+                        str(d / f)
+                        for f in (
+                            "Main.java",
+                            "DsaJson.java",
+                            "ListNode.java",
+                            "TreeNode.java",
+                            "Solution.java",
+                        )
+                    ),
+                ],
+                cwd=d,
+            )
+
+        out = build_cached("java", files, [tool_version(cfg.javac)], compile_fn)
+        return Built(
+            lang="java",
+            argv=[
+                cfg.java,
+                "-Xmx{mem}m",
+                "-XX:+UseSerialGC",
+                "-Dfile.encoding=UTF-8",
+                "-cp",
+                str(out / "classes"),
+                "Main",
+                "{fd}",
+            ],
+            cwd=out,
+            mem_overhead_mb=192,
+            startup_s=3.0,
+            debug=debug,
+        )

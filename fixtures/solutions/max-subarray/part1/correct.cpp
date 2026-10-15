@@ -1,0 +1,12 @@
+// Kadane, O(n).
+class Solution {
+public:
+    int maxSubarraySum(vector<int>& nums) {
+        int best = nums[0], cur = 0;
+        for (int x : nums) {
+            cur = max(x, cur + x);
+            best = max(best, cur);
+        }
+        return best;
+    }
+};

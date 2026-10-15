@@ -1,0 +1,25 @@
+# {{ slug }} · part {{ part_id }} · {{ title }}
+# Run: dsa run    Submit: dsa submit
+# typing (List, Optional, ...), collections, heapq, bisect, itertools and functools
+# are pre-imported, as on LeetCode.
+{%- if uses_listnode %}
+# class ListNode:
+#     def __init__(self, val=0, next=None):
+#         self.val = val
+#         self.next = next
+{%- endif %}
+{%- if uses_treenode %}
+# class TreeNode:
+#     def __init__(self, val=0, left=None, right=None):
+#         self.val = val
+#         self.left = left
+#         self.right = right
+{%- endif %}
+class Solution:
+    def {{ method }}(self{{ params_decl }}) -> {{ ret_py }}:
+{%- if output_param %}
+        """
+        Do not return anything, modify {{ output_param }} in-place instead.
+        """
+{%- endif %}
+        pass

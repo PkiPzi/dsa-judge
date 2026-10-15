@@ -1,8 +1,7 @@
 # PUBLIC FIXTURE: classic problems, statements written in our own words.
 # Exercises: C++ ref (part 1), Java ref from a "friend" (part 2),
 # a follow-up with no ref and an unverified LLM-style brute (part 3).
-# The schema here is the Phase 1 draft from docs/PLAN.md §4.2; update this
-# file if the final schema differs.
+# Schema version 1 (docs/PLAN.md §4.2, src/dsajudge/model/schema.py).
 schema: 1
 slug: max-subarray
 title: Maximum subarray sum, with follow-ups
