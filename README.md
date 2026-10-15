@@ -19,19 +19,22 @@ Full setup and troubleshooting: [docs/SETUP_AND_DEBUG.md](docs/SETUP_AND_DEBUG.m
 # toolchains for the judge
 sudo pacman -S --needed gcc jdk-openjdk python uv
 
-# intake (needed from Phase 3)
-sudo pacman -S --needed ffmpeg wl-clipboard ollama-cuda
+# intake (needed from Phase 3); whisper.cpp + its CUDA backend are in the official repos
+sudo pacman -S --needed ffmpeg wl-clipboard ollama-cuda whisper-cpp ggml-cuda
 sudo systemctl enable --now ollama
-# whisper.cpp from the AUR; pick the CUDA build if one is offered
-yay -Ss whisper.cpp
+# optional: keep models on a bigger partition: `sudo systemctl edit ollama`, then add
+#   [Service]  Environment="OLLAMA_MODELS=/mnt/models/ollama"
 
 # then, in this repo
 uv sync --all-extras
 uv run dsa doctor
 
-# put `dsa` on your PATH (editor tasks and :!dsa run need it)
-uv tool install --editable .
+# put `dsa` on your PATH (editor tasks and :!dsa run need it); the [ai] extra is for `dsa add`
+uv tool install --editable '.[ai]'
 ```
+
+Download `ggml-large-v3-turbo-q5_0.bin` (about 574 MB) into `ai.whisper_model_dir` and confirm the
+`whisper-cli` log shows `found 1 CUDA devices`; the steps are in [LOCAL_TESTING.md](LOCAL_TESTING.md).
 
 ## Install from PyPI
 

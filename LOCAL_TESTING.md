@@ -16,11 +16,15 @@ used on `127.0.0.1` and whisper.cpp is a local process.
 sudo pacman -S --needed ollama-cuda ffmpeg wl-clipboard
 sudo systemctl enable --now ollama
 
-# whisper.cpp from the AUR. Pick the CUDA (or Vulkan) build if one is offered.
-yay -Ss whisper.cpp
-yay -S whisper.cpp-cuda          # name may differ: use whatever `yay -Ss` shows
+# whisper.cpp with the CUDA backend, both from the official repos (no AUR needed)
+sudo pacman -S --needed whisper-cpp ggml-cuda
 which whisper-cli                # dsa looks for whisper-cli, whisper-cpp or whisper.cpp
+ls /usr/lib/ggml/libggml-cuda.so # the GPU backend whisper-cli loads at start-up
 ```
+
+Models can live on another partition (they are large): set `OLLAMA_MODELS=/path` for the Ollama
+service with `sudo systemctl edit ollama`, and point `ai.whisper_model_dir` at a directory there
+too (section 2). Make sure the service user can read the Ollama path.
 
 A 4 GB card holds one small model at a time. dsa already unloads every model after each call
 (`keep_alive: 0`), but also tell the server to never keep two:
@@ -46,30 +50,47 @@ ollama pull qwen2.5vl:3b         # vision (default): photos of statements
 ollama pull qwen3.5:2b           # vision alternative (check the tag exists in the Ollama library)
 ```
 
-whisper.cpp needs a ggml model file. Either take one from an AUR model package
-(`yay -Ss whisper.cpp-model`) or download it with the script in the whisper.cpp repository:
+whisper.cpp needs a ggml model file. On a 4 GB card the quantized large-v3-turbo model (about
+574 MB) fits next to the desktop and is far more accurate than `small`. Download it into
+`ai.whisper_model_dir`:
 
 ```zsh
-mkdir -p ~/.local/share/whisper.cpp && cd ~/.local/share/whisper.cpp
-# from a whisper.cpp checkout:  ./models/download-ggml-model.sh small
-# or fetch ggml-small.bin by hand and put it here
-ls ggml-small.bin
+mkdir -p /mnt/models/whisper && cd /mnt/models/whisper     # any directory you own
+curl -L -C - -O https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
+ls -l ggml-large-v3-turbo-q5_0.bin   # about 574 MB; a few KB means an HTML error page
 ```
 
 dsa looks for `ggml-<name>.bin` in `ai.whisper_model_dir`, `~/.local/share/whisper.cpp/`,
-`~/whisper.cpp/models/` and the usual `/usr/share/whisper.cpp*` directories. Voice notes in Hinglish
-usually do better with `medium` (partly on CPU is fine) than `small`; try `ai.whisper_language =
-"hi"` or `"en"` if `auto` guesses wrong.
+`~/whisper.cpp/models/` and the usual `/usr/share/whisper.cpp*` directories.
+
+Check that the GPU is really used, with any short voice note. The first lines of the
+`whisper-cli` log must show the CUDA device and backend; if they are missing it silently runs on
+the CPU, many times slower:
+
+```zsh
+ffmpeg -y -i note.m4a -ar 16000 -ac 1 /tmp/note.wav
+whisper-cli -m /mnt/models/whisper/ggml-large-v3-turbo-q5_0.bin -f /tmp/note.wav -l hi -nt 2>&1 \
+  | grep -iE "cuda|backend|gpu"
+# expect:  ggml_cuda_init: found 1 CUDA devices ...
+#          whisper_backend_init_gpu: using CUDA0 backend
+```
+
+The "suboptimal performance due to a lack of tensor cores" line is normal on a GTX 1650.
+
+Language matters for Hinglish voice notes: `auto` usually detects English and drops the Hindi
+sentences; `hi` keeps them but writes Hindi words in Devanagari. Compare `-l auto`, `-l en` and
+`-l hi` on one of your own clips before choosing `ai.whisper_language`.
 
 Put non-default choices in `~/dsa-bank/config.toml`:
 
 ```toml
 [ai]
-whisper_language = "auto"
+whisper_model_dir = "/mnt/models/whisper"
+whisper_language = "hi"
 [ai.models]
-text = "qwen3:4b"
+text = "qwen2.5-coder:3b"
 vision = "qwen2.5vl:3b"
-whisper = "medium"
+whisper = "large-v3-turbo-q5_0"
 ```
 
 ## 3. Check what works
@@ -124,5 +145,6 @@ dsa open try-1
 | `model 'x' is not installed` | `ollama pull x`, or change `ai.models.*` |
 | first call is very slow | the model is loading; every call unloads it again by design |
 | out-of-memory in Ollama | use a smaller vision/text model; `nvidia-smi` should show one model at a time |
+| intake is slow (vision takes minutes) | the desktop shares the 4 GB card, so a 3B model is only partly on the GPU: `journalctl -u ollama \| grep offloaded` shows e.g. `19/37 layers`. Close Firefox and VS Code windows before `dsa add` to free VRAM |
 | `whisper model 'small' not found` | put `ggml-small.bin` in `ai.whisper_model_dir` |
 | the draft keeps failing review | the checklist header names the problem; an emptied `problem.yaml` aborts, and `dsa add --resume NAME` continues from the saved inbox |
