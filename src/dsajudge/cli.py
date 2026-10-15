@@ -15,9 +15,14 @@ from rich.markup import escape
 from rich.table import Table
 
 from dsajudge import __version__
+from dsajudge.ai import factory as ai_factory
+from dsajudge.ai.base import AIError
 from dsajudge.config import Config, ConfigError, load_config
 from dsajudge.doctor import run_checks
 from dsajudge.gen.manifest import load_disputes, load_manifest, part_tests_dir
+from dsajudge.intake import pipeline
+from dsajudge.intake.review import run_editor
+from dsajudge.intake.sources import IntakeError, read_clipboard
 from dsajudge.judge.limits import detect_backend, raise_stack_limit
 from dsajudge.judge.session import (
     JudgeError,
@@ -116,7 +121,12 @@ def _root(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    models: Annotated[
+        bool,
+        typer.Option("--models", help="Also run each configured model on fixture inputs"),
+    ] = False,
+) -> None:
     """Check toolchains, Ollama/whisper reachability and resource-limit support."""
     cfg = _config()
     table = Table(show_header=False, box=None, pad_edge=False)
@@ -126,6 +136,34 @@ def doctor() -> None:
         table.add_row(mark, c.name, detail)
     console.print(table)
     console.print("[dim]warnings are fine until you need that feature[/]")
+    if models:
+        _bench_models(cfg)
+
+
+def _bench_models(cfg: Config) -> None:
+    from dsajudge.ai.bench import run_bench
+
+    console.print("\n[bold]models[/] [dim](3 runs each; the first call also loads the model)[/]")
+    try:
+        rows = run_bench(cfg, ai_factory.PROVIDERS)
+    except AIError as e:
+        fail(str(e))
+    table = Table("check", "model", "usable", "avg time", "note")
+    for r in rows:
+        rate = f"{r.ok}/{r.runs}" if r.runs else "-"
+        style = "green" if r.runs and r.ok == r.runs else ("yellow" if r.ok else "red")
+        table.add_row(
+            r.role,
+            escape(r.model),
+            f"[{style}]{rate}[/]",
+            f"{r.latency:.1f} s" if r.seconds else "-",
+            escape(r.note),
+        )
+    console.print(table)
+    console.print(
+        "[dim]usable = schema-valid and sane. Below 3/3 on text checks, try a larger "
+        "models.text (a 7-8B model partly on CPU is fine for one-time intake).[/]"
+    )
 
 
 @app.command("import")
@@ -266,6 +304,130 @@ def promote(
     except ModeError as e:
         fail(str(e))
     console.print(f"[green]promoted[/] {src.name} to the ref of part {pid}")
+    _print_build(report)
+
+
+# ------------------------------------------------------------------ intake
+
+
+def _intake_env(cfg: Config) -> pipeline.Env:
+    raise_stack_limit()
+    return pipeline.Env(
+        cfg=cfg,
+        providers=ai_factory.PROVIDERS,
+        backend=detect_backend(cfg.judge.memory_backend),
+        say=lambda m: console.print(f"[dim]{escape(m)}[/]"),
+        edit=run_editor,
+        confirm=lambda q: typer.confirm(q, default=False),
+    )
+
+
+def _gather_texts(clip: bool, typed: bool) -> list[tuple[str, str]]:
+    texts: list[tuple[str, str]] = []
+    if clip:
+        text = read_clipboard()
+        if not text:
+            fail("the clipboard is empty (needs wl-paste or xclip)")
+        texts.append(("clipboard.txt", text))
+    if typed:
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dsa-text-") as tmp:
+            path = Path(tmp) / "pasted.md"
+            path.write_text("", encoding="utf-8")
+            if run_editor([path]) != 0:
+                fail("the editor exited with an error")
+            content = path.read_text(encoding="utf-8")
+        if not content.strip():
+            fail("nothing was typed")
+        texts.append(("typed.md", content))
+    return texts
+
+
+def _report_outcome(out: pipeline.Outcome) -> None:
+    console.print(
+        f"[green]added[/] [bold]{out.slug}[/]: {out.parts} part(s) built "
+        f"(parts {out.first_part}..{out.first_part + out.parts - 1})"
+    )
+    for r in out.reports:
+        _print_build(r)
+    console.print(f"next: dsa open {out.slug}")
+
+
+def _intake_call(fn: Callable[[], object]) -> object:
+    try:
+        return fn()
+    except (IntakeError, AIError) as e:
+        fail(str(e), 1)
+
+
+@app.command()
+def add(
+    files: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Photos, voice notes, .txt/.md, or code (.cpp .cc .java .py)"),
+    ] = None,
+    slug: Annotated[str | None, typer.Option("--slug", help="Name for the problem")] = None,
+    clip: Annotated[bool, typer.Option("--clip", help="Use the clipboard text")] = False,
+    text: Annotated[bool, typer.Option("--text", help="Open $EDITOR to paste text")] = False,
+    resume: Annotated[
+        str | None, typer.Option("--resume", help="Continue an interrupted add (its inbox name)")
+    ] = None,
+) -> None:
+    """Add a question from photos, voice notes, text and code (local AI, then a review)."""
+    cfg = _config()
+    env = _intake_env(cfg)
+    texts = [] if resume else _gather_texts(clip, text)
+    out = _intake_call(
+        lambda: pipeline.add(env, slug=slug, files=list(files or []), texts=texts, resume=resume)
+    )
+    assert isinstance(out, pipeline.Outcome)
+    _report_outcome(out)
+
+
+@app.command()
+def followup(
+    slug: Annotated[str, typer.Argument(help="Problem to extend")],
+    files: Annotated[
+        list[Path] | None, typer.Argument(help="Photos, voice notes, text, code")
+    ] = None,
+    clip: Annotated[bool, typer.Option("--clip", help="Use the clipboard text")] = False,
+    text: Annotated[bool, typer.Option("--text", help="Open $EDITOR to paste text")] = False,
+    resume: Annotated[
+        bool, typer.Option("--resume", help="Continue an interrupted follow-up")
+    ] = False,
+) -> None:
+    """Append part N+1 to a problem, read against the previous part's signature and constraints."""
+    cfg = _config()
+    env = _intake_env(cfg)
+    texts = [] if resume else _gather_texts(clip, text)
+    out = _intake_call(
+        lambda: pipeline.followup(env, slug, files=list(files or []), texts=texts, resume=resume)
+    )
+    assert isinstance(out, pipeline.Outcome)
+    _report_outcome(out)
+
+
+@app.command("ref")
+def ref_cmd(
+    slug: Annotated[str, typer.Argument(help="Problem slug")],
+    file: Annotated[Path, typer.Argument(help="A code file or a photo of code")],
+    part: Annotated[int, typer.Option("--part", "-p", help="Part number")] = 1,
+    lang: LangOpt = None,
+    origin: Annotated[
+        str, typer.Option("--origin", help="user, friend or promoted (default friend)")
+    ] = "friend",
+) -> None:
+    """Attach a reference solution to a part; it must agree with the existing oracle."""
+    cfg = _config()
+    env = _intake_env(cfg)
+    if origin not in ("user", "friend"):
+        fail("--origin must be user or friend")
+    report = _intake_call(
+        lambda: pipeline.attach_ref(env, slug, part, file, lang=lang, origin=origin)
+    )
+    assert isinstance(report, BuildReport)
+    console.print(f"[green]attached[/] the ref to part {part} of {slug}")
     _print_build(report)
 
 
