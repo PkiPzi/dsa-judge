@@ -8,6 +8,7 @@ from pathlib import Path
 
 from dsajudge.ai.base import LLM, Transcriber
 from dsajudge.ai.prompts import load_prompt
+from dsajudge.intake.codefence import fence_code
 from dsajudge.intake.sources import IntakeError, SourceRec
 
 FENCE = re.compile(r"```[ \t]*([\w+#-]*)[ \t]*\n(.*?)\n?```", re.DOTALL)
@@ -52,7 +53,7 @@ def transcribe_one(
     if rec.kind == "image":
         png = prepare_image(path, work_dir / (Path(rec.name).stem + ".png"), max_side)
         system, user = load_prompt("transcribe_image").render()
-        return vision.complete(user, system=system, images=[png]).strip()
+        return fence_code(vision.complete(user, system=system, images=[png]).strip())
     if rec.kind == "audio":
         return audio.transcribe(path).strip()
     text = path.read_text(encoding="utf-8")

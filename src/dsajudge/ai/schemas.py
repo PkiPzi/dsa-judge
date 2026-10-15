@@ -31,7 +31,7 @@ class Segmentation(_M):
 
 
 class BundleStart(_M):
-    line: int
+    first_line: str  # the first line of the new question, copied from the page
     title: str = ""
 
 

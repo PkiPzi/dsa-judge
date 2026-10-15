@@ -36,7 +36,7 @@ from dsajudge.ai.schemas import CodeOut, Extraction, Segmentation
 from dsajudge.config import Config, dsa_home
 from dsajudge.gen.suite import gen_script
 from dsajudge.intake import structure
-from dsajudge.intake.bundle import Group, group_pages, split_bundle
+from dsajudge.intake.bundle import Group, drop_repeated_runs, group_pages, split_bundle
 from dsajudge.intake.draft import (
     append_parts,
     examine,
@@ -622,7 +622,9 @@ def bundle(
     if "transcribe" not in state.done:
         _transcribe(env, inbox, state)
         _mark(inbox, state, "transcribe")
-    sections = parse_sections((inbox / "transcript.md").read_text(encoding="utf-8"))
+    sections = drop_repeated_runs(
+        parse_sections((inbox / "transcript.md").read_text(encoding="utf-8"))
+    )
 
     split_path = inbox / "split.json"
     if split_path.exists():

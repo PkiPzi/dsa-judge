@@ -6,8 +6,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
-
 from dsajudge.intake.bundle import group_pages, split_bundle
 from dsajudge.intake.sources import order_sources
 
@@ -37,9 +35,10 @@ def test_copy_suffixed_names_keep_arrival_order(tmp_path: Path) -> None:
 
 
 class Scripted:
-    """Answers split_bundle with the lines starting `Problem`, plus any extra `claims`."""
+    """Answers split_bundle with each page line starting `Problem`, plus any extra `claims`
+    (a substring of the page -> lines the model wrongly says start a question)."""
 
-    def __init__(self, claims: dict[str, list[int]] | None = None) -> None:
+    def __init__(self, claims: dict[str, list[str]] | None = None) -> None:
         self.claims = claims or {}
         self.calls = 0
 
@@ -52,13 +51,14 @@ class Scripted:
         images: list[Path] | None = None,
     ) -> str:
         self.calls += 1
-        page = prompt.split("This page, with line numbers:\n", 1)[1]
-        starts = []
-        for m in re.finditer(r"^\[(\d+)\] Problem (\w+)", page, flags=re.MULTILINE):
-            starts.append({"line": int(m.group(1)), "title": f"Problem {m.group(2)}"})
-        for key, lines in self.claims.items():
+        page = prompt.split("This page:\n", 1)[1]
+        starts = [
+            {"first_line": m.group(0), "title": f"Problem {m.group(1)}"}
+            for m in re.finditer(r"^Problem (\w+).*$", page, flags=re.MULTILINE)
+        ]
+        for key, quotes in self.claims.items():
             if key in page:
-                starts += [{"line": n, "title": "claimed"} for n in lines]
+                starts += [{"first_line": q, "title": "claimed"} for q in quotes]
         return json.dumps({"starts": starts})
 
 
@@ -92,14 +92,14 @@ def test_questions_are_split_inside_and_across_pages() -> None:
 def test_a_boundary_inside_a_code_block_is_ignored() -> None:
     sections = {1: STATEMENT_A + CODE_A, 2: "```cpp\nint a;\nint b;\n```\n" + STATEMENT_B}
     # the model wrongly claims line 3 of page 2 (inside the fence) starts a question
-    groups = split_bundle(Scripted({"int a;": [3]}), sections)
+    groups = split_bundle(Scripted({"int a;": ["int a;"]}), sections)
     assert [g.title for g in groups] == ["Problem A", "Problem B"]
 
 
 def test_a_fragment_joins_its_neighbour() -> None:
     sections = {1: STATEMENT_A + CODE_A + "\nSolution:\n", 2: STATEMENT_B}
     # "Solution:" is claimed as a new question but has no statement text
-    groups = split_bundle(Scripted({"Solution:": [6]}), sections)
+    groups = split_bundle(Scripted({"Solution:": ["Solution:"]}), sections)
     assert [g.title for g in groups] == ["Problem A", "Problem B"]
 
 
@@ -108,15 +108,27 @@ def test_a_single_question_stays_one_group_and_untitled_ones_are_numbered() -> N
     assert len(groups) == 1 and groups[0].title == "question 1"
 
 
-def test_bad_line_numbers_are_retried_then_reported() -> None:
+def test_a_model_that_only_misquotes_is_ignored_not_fatal() -> None:
     class Wrong(Scripted):
         def complete(self, prompt: str, **kw: object) -> str:  # type: ignore[override]
             self.calls += 1
-            return json.dumps({"starts": [{"line": 99, "title": "x"}]})
-
-    from dsajudge.ai.base import AIError
+            return json.dumps({"starts": [{"first_line": "no such line anywhere", "title": "x"}]})
 
     llm = Wrong()
-    with pytest.raises(AIError, match="does not exist"):
-        split_bundle(llm, {1: STATEMENT_A}, attempts=2)
-    assert llm.calls == 2
+    groups = split_bundle(llm, {1: STATEMENT_A, 2: CODE_A}, attempts=2)
+    assert llm.calls == 2  # the one prose page, twice; the code-only page needs no model
+    assert len(groups) == 1
+
+
+def test_a_statement_after_code_is_a_new_question_even_if_the_model_misses_it() -> None:
+    class Blind(Scripted):
+        def complete(self, prompt: str, **kw: object) -> str:  # type: ignore[override]
+            self.calls += 1
+            return json.dumps({"starts": []})
+
+    cued = (
+        "Count the islands\nGiven a grid of 0s and 1s, count the islands.\n"
+        "Constraints:\nExample 1: Input: grid = []"
+    )
+    groups = split_bundle(Blind(), {1: STATEMENT_A + "Constraints:\n" + CODE_A, 2: cued})
+    assert len(groups) == 2

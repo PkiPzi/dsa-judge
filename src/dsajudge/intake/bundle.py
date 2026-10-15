@@ -14,18 +14,28 @@ import re
 
 from pydantic import BaseModel, Field
 
-from dsajudge.ai.base import LLM
+from dsajudge.ai.base import LLM, AIError
 from dsajudge.ai.retry import ask_structured
 from dsajudge.ai.schemas import BundleScan
 
 OPEN_HEAD_LINES = 4  # statement lines of the open question shown to the model
 OPEN_TAIL_LINES = 3  # latest lines shown, so it can tell a finished question from a running one
 MIN_PROSE_CHARS = 40  # a group with less statement text than this is a fragment
-SAME_QUESTION = 0.85  # head similarity above which two groups are the same question
-HEAD_CHARS = 160  # how much statement text is compared
-MIN_HEAD = 25  # shorter statements are never merged as repeats
+SAME_QUESTION = 0.9  # opening-line similarity above which two groups are the same question
+MIN_HEAD = 15  # shorter opening lines are never merged as repeats
 MIN_REPEAT_LINE = 30  # a prose line this long is dropped when it repeats inside a group
+SHINGLE = 3  # consecutive lines that must repeat for a run to count as a duplicate
+MIN_LONG_LINE = 20  # a repeated run needs at least two lines this long
+QUOTE_MATCH = 0.75  # how closely the quoted first line must match a line of the page
+TITLE_MAX = 70  # a title line is at most this long
 FENCE = re.compile(r"^[ \t]*```")
+CUE = re.compile(r"^\s*(example\s*\d*|constraints?|input\s*:|output\s*:|sample)\b", re.IGNORECASE)
+# openings that continue a question instead of starting one
+NOT_A_STATEMENT = re.compile(
+    r"^(time|space|approach|explanation|complexity|idea|solution|note|follow|what if|can you"
+    r"|now|also|extend|modify|if )",
+    re.IGNORECASE,
+)
 
 
 class Span(BaseModel):
@@ -75,25 +85,146 @@ def _open_summary(groups: list[Group], sections: dict[int, str]) -> str:
     return "Begins:\n" + "\n".join(head) + "\nLatest lines:\n" + "\n".join(tail)
 
 
+def _norm(line: str) -> str:
+    return " ".join(line.lower().split())
+
+
+def _locate(lines: list[str], candidates: list[int], quote: str) -> int | None:
+    """0-based index of the candidate line that best matches ``quote``, if it matches well."""
+    q = _norm(quote)
+    best, found = 0.0, None
+    for i in candidates:
+        r = difflib.SequenceMatcher(None, q, _norm(lines[i])).ratio()
+        if r > best:
+            best, found = r, i
+    return found if best >= QUOTE_MATCH else None
+
+
+def _snap_to_title(lines: list[str], prose: list[int], i: int) -> int:
+    """If the line above ``i`` is a short title (the model quoted the sentence under it), start
+    there. A title is short, unpunctuated and neither a cue ("Example 1") nor an explanation."""
+    if i == 0 or (i - 1) not in prose:
+        return i
+    above = lines[i - 1].strip()
+    is_title = (
+        len(above) <= TITLE_MAX
+        and above[-1] not in ".:;,?!)}"
+        and not CUE.match(above)
+        and not NOT_A_STATEMENT.match(above)
+        and len(lines[i].strip()) > len(above)
+    )
+    return i - 1 if is_title else i
+
+
+def _has_code(group: Group, sections: dict[int, str]) -> bool:
+    for sp in group.spans:
+        inside = _inside_code(sections[sp.section].split("\n"))
+        if any(inside[sp.start - 1 : sp.end]):
+            return True
+    return False
+
+
+def _cue_starts(
+    lines: list[str], prose: list[int], inside: list[bool], has_code: bool
+) -> list[int]:
+    """Statement blocks (prose with an Example/Constraints/Input cue) that follow code: a second
+    opinion that does not depend on the model. 0-based indices of their first lines."""
+    out: list[int] = []
+    seen_code = has_code
+    block: list[int] = []
+
+    def close() -> None:
+        if seen_code and block:
+            head = lines[block[0]].strip()
+            cue = any(CUE.match(lines[i]) for i in block[:14])
+            if cue and not CUE.match(head) and not NOT_A_STATEMENT.match(head):
+                out.append(block[0])
+
+    for i in range(len(lines)):
+        if inside[i]:
+            close()
+            block = []
+            seen_code = True
+        elif lines[i].strip():
+            block.append(i)
+    close()
+    return [_snap_to_title(lines, prose, i) for i in out]
+
+
 def _scan_page(
-    llm: LLM, page: str, lines: list[str], groups: list[Group], sections: dict[int, str], tries: int
+    llm: LLM,
+    lines: list[str],
+    prose: list[int],
+    groups: list[Group],
+    sections: dict[int, str],
+    tries: int,
 ) -> dict[int, str]:
-    """Line number -> title of each question the model says begins on this page."""
-    count = len(lines)
+    """0-based line -> title of each question the model says begins on this page."""
 
     def check(scan: BundleScan) -> str | None:
-        bad = [s.line for s in scan.starts if not 1 <= s.line <= count]
-        return f"line {bad[0]} does not exist: this page has lines 1 to {count}" if bad else None
+        # one misquoted line is ignored below; only a reply with no usable line is retried
+        if scan.starts and all(_locate(lines, prose, s.first_line) is None for s in scan.starts):
+            quote = scan.starts[0].first_line[:80]
+            return f"first_line {quote!r} is not a line of this page; copy it exactly"
+        return None
 
-    scan = ask_structured(
-        llm,
-        "split_bundle",
-        BundleScan,
-        {"open": _open_summary(groups, sections), "page": page},
-        attempts=tries,
-        check=check,
-    )
-    return {s.line: s.title.strip() for s in reversed(scan.starts)}
+    try:
+        scan = ask_structured(
+            llm,
+            "split_bundle",
+            BundleScan,
+            {"open": _open_summary(groups, sections), "page": "\n".join(lines)},
+            attempts=tries,
+            check=check,
+        )
+    except AIError:
+        return {}  # the cue rule and the guards still apply to this page
+    found: dict[int, str] = {}
+    for s in scan.starts:
+        at = _locate(lines, prose, s.first_line)
+        # a question never opens with "Example 2:" or "Constraints:": that page continues one
+        if (
+            at is not None
+            and not CUE.match(lines[at])
+            and not NOT_A_STATEMENT.match(lines[at].strip())
+        ):
+            found.setdefault(_snap_to_title(lines, prose, at), s.title.strip())
+    return found
+
+
+def drop_repeated_runs(sections: dict[int, str]) -> dict[int, str]:
+    """Remove from each page the runs of lines that already appeared on an earlier page.
+
+    Photos of a bundle are often near-copies (a burst, the same page twice); the stitcher only
+    handles the end of one photo repeating at the top of the next. A run counts when SHINGLE
+    consecutive lines repeat and at least two of them are long enough to be distinctive, so the
+    braces and short code lines that really do repeat between questions are never dropped.
+    """
+
+    def key(line: str) -> str:
+        return " ".join(line.split()).lower()
+
+    def shingles(lines: list[str]) -> list[tuple[str, ...]]:
+        ks = [key(ln) for ln in lines]
+        return [tuple(ks[i : i + SHINGLE]) for i in range(len(ks) - SHINGLE + 1)]
+
+    def distinctive(sh: tuple[str, ...]) -> bool:
+        return sum(len(k) >= MIN_LONG_LINE for k in sh) >= 2
+
+    seen: set[tuple[str, ...]] = set()
+    out: dict[int, str] = {}
+    for n in sorted(sections):
+        lines = sections[n].split("\n")
+        content = [i for i, ln in enumerate(lines) if ln.strip() and not FENCE.match(ln)]
+        flat = [lines[i] for i in content]
+        drop: set[int] = set()
+        for j, sh in enumerate(shingles(flat)):
+            if sh in seen and distinctive(sh):
+                drop.update(content[j : j + SHINGLE])
+        seen.update(shingles(flat))
+        kept = [ln for i, ln in enumerate(lines) if i not in drop]
+        out[n] = "\n".join(kept).strip("\n")
+    return out
 
 
 def split_bundle(llm: LLM, sections: dict[int, str], attempts: int = 3) -> list[Group]:
@@ -104,22 +235,22 @@ def split_bundle(llm: LLM, sections: dict[int, str], attempts: int = 3) -> list[
         if not any(ln.strip() for ln in lines):
             continue
         inside = _inside_code(lines)
-        prose = [i + 1 for i, ln in enumerate(lines) if ln.strip() and not inside[i]]
+        prose = [i for i, ln in enumerate(lines) if ln.strip() and not inside[i]]
         starts: dict[int, str] = {}
         if prose:
-            page = "\n".join(f"[{i}] {ln}" for i, ln in enumerate(lines, 1))
-            found = _scan_page(llm, page, lines, groups, sections, attempts)
-            # a boundary is only believed on a statement line, never inside a code block
-            starts = {line: title for line, title in found.items() if line in prose}
+            starts = _scan_page(llm, lines, prose, groups, sections, attempts)
+            open_code = bool(groups) and _has_code(groups[-1], sections)
+            for i in _cue_starts(lines, prose, inside, open_code):
+                starts.setdefault(i, "")
         if not groups:
-            starts.setdefault(prose[0] if prose else 1, "")
+            starts.setdefault(prose[0] if prose else 0, "")
         bounds = sorted(starts)
-        first = bounds[0] if bounds else len(lines) + 1
-        if groups and first > 1:
-            groups[-1].spans.append(Span(section=n, start=1, end=first - 1))
-        for i, b in enumerate(bounds):
-            end = bounds[i + 1] - 1 if i + 1 < len(bounds) else len(lines)
-            groups.append(Group(title=starts[b], spans=[Span(section=n, start=b, end=end)]))
+        first = bounds[0] if bounds else len(lines)
+        if groups and first > 0:
+            groups[-1].spans.append(Span(section=n, start=1, end=first))
+        for i, b0 in enumerate(bounds):
+            end = bounds[i + 1] if i + 1 < len(bounds) else len(lines)
+            groups.append(Group(title=starts[b0], spans=[Span(section=n, start=b0 + 1, end=end)]))
     groups = _merge_fragments(groups, sections)
     groups = _merge_repeats(groups, sections)
     for i, g in enumerate(groups, 1):
@@ -145,23 +276,29 @@ def _merge_fragments(groups: list[Group], sections: dict[int, str]) -> list[Grou
     return out
 
 
-def _head(group: Group, sections: dict[int, str]) -> str:
-    """The first HEAD_CHARS of the group's statement text, case and spacing normalised."""
-    return " ".join(" ".join(_prose(group, sections)).lower().split())[:HEAD_CHARS]
+def _openings(group: Group, sections: dict[int, str]) -> list[str]:
+    """The first lines of the group's statement (a title and/or the task sentence), normalised."""
+    lines = [ln for ln in _prose(group, sections) if not CUE.match(ln)]
+    return [" ".join(ln.lower().split()) for ln in lines[:2]]
 
 
-def _same_question(a: str, b: str) -> bool:
-    # equal-length prefixes: a restated question may stop earlier or run on with other text
-    n = min(len(a), len(b))
-    return n >= MIN_HEAD and difflib.SequenceMatcher(None, a[:n], b[:n]).ratio() >= SAME_QUESTION
+def _same_question(a: list[str], b: list[str]) -> bool:
+    """A restated question repeats its opening line; two questions that merely share boilerplate
+    (the same constraints, "Given an integer array ...") do not, so only openings are compared."""
+    return any(
+        min(len(x), len(y)) >= MIN_HEAD
+        and difflib.SequenceMatcher(None, x, y).ratio() >= SAME_QUESTION
+        for x in a
+        for y in b
+    )
 
 
 def _merge_repeats(groups: list[Group], sections: dict[int, str]) -> list[Group]:
     """A question photographed twice (or restated later) is one question."""
     out: list[Group] = []
-    heads: list[str] = []
+    heads: list[list[str]] = []
     for g in groups:
-        head = _head(g, sections)
+        head = _openings(g, sections)
         for i, seen in enumerate(heads):
             if _same_question(seen, head):
                 out[i].spans += g.spans
