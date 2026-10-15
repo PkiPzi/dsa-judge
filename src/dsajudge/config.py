@@ -68,6 +68,16 @@ class ModelsConfig(_Strict):
 class AIConfig(_Strict):
     ollama_url: str = "http://127.0.0.1:11434"
     whisper_bin: str = ""
+    # Directory holding ggml-<model>.bin files; empty searches the usual places.
+    whisper_model_dir: str = ""
+    # Spoken language for whisper.cpp: "auto", "en", "hi", ...
+    whisper_language: str = "auto"
+    timeout_s: float = 900.0
+    num_ctx: int = 8192
+    # Every AI-written artifact is verified by execution and retried with the error fed back.
+    max_attempts: int = 3
+    # Photos larger than this (longest side, px) are downscaled before transcription.
+    max_image_side: int = 1600
     models: ModelsConfig = Field(default_factory=ModelsConfig)
 
 
