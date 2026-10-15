@@ -17,13 +17,15 @@ from typing import Any
 
 from dsajudge.config import JudgeConfig, cache_dir
 from dsajudge.judge.cache import digest
-from dsajudge.judge.checkers import get_checker
+from dsajudge.judge.checkers import part_checker
 from dsajudge.judge.limits import MemoryBackend
-from dsajudge.judge.runner import RunLimits, TestCase, run_tests
+from dsajudge.judge.runner import BatchOutcome, RunLimits, TestCase, run_tests
+from dsajudge.judge.stdio import run_program_tests, stdin_file
 from dsajudge.lang import get_language
 from dsajudge.lang.base import CompileError
 from dsajudge.lang.codegen import TEMPLATES
 from dsajudge.model.canon import args_to_text, dumps, read_args, short
+from dsajudge.model.render import render_input, render_output
 from dsajudge.model.schema import Part, Problem, SourceFile
 
 ORACLE_CACHE_VERSION = "1"
@@ -40,11 +42,13 @@ class OracleError(Exception):
 @dataclass
 class JudgeTest:
     id: str
-    group: str  # sample | manual | custom
+    group: str  # sample | manual | custom | edge | small_random | medium_random | max
     path: Path
     expected: Any = None
     has_expected: bool = False
     unverified: bool = False
+    # Expected output (or the lack of one) is fixed by the manifest; resolve() leaves it alone.
+    sealed: bool = False
 
     @property
     def case(self) -> TestCase:
@@ -65,7 +69,12 @@ def tests_cache_dir(slug: str, part_id: int) -> Path:
     return cache_dir() / "tests" / slug / f"part{part_id}"
 
 
-def _write_input(dirpath: Path, name: str, args: list[Any]) -> Path:
+def generated_dir(slug: str, part_id: int) -> Path:
+    """Where generated (non-sample) test inputs live in the cache."""
+    return tests_cache_dir(slug, part_id) / "gen"
+
+
+def write_input(dirpath: Path, name: str, args: list[Any]) -> Path:
     dirpath.mkdir(parents=True, exist_ok=True)
     path = dirpath / f"{name}.in.json"
     text = args_to_text(args)
@@ -80,8 +89,8 @@ def sample_tests(slug: str, part: Part) -> list[JudgeTest]:
         JudgeTest(
             id=f"sample/{i}",
             group="sample",
-            path=_write_input(d, f"sample-{i}", s.args),
-            expected=s.expected,
+            path=write_input(d, f"sample-{i}", s.args),
+            expected=render_output(part, s.expected) if part.mode == "stdio" else s.expected,
             has_expected=True,
         )
         for i, s in enumerate(part.samples, 1)
@@ -102,7 +111,7 @@ def manual_tests(problem_dir: Path, part: Part) -> list[JudgeTest]:
 def custom_test(slug: str, part: Part, args: list[Any]) -> JudgeTest:
     d = tests_cache_dir(slug, part.id) / "custom"
     name = "custom-" + digest(args_to_text(args))[:12]
-    return JudgeTest(id="custom", group="custom", path=_write_input(d, name, args))
+    return JudgeTest(id="custom", group="custom", path=write_input(d, name, args))
 
 
 @cache
@@ -121,14 +130,49 @@ def _source_key(problem_dir: Path, src: SourceFile) -> str:
 
 
 @dataclass
-class _SourceRun:
-    status: str
+class SourceRun:
+    status: str  # ok | tle | mle | crash | exception | ...
     output: Any
     time_ms: float
     message: str
 
 
-def _run_source(
+def run_raw(
+    problem: Problem,
+    problem_dir: Path,
+    part: Part,
+    src: SourceFile,
+    tests: list[JudgeTest],
+    cfg: JudgeConfig,
+    backend: MemoryBackend,
+    limits: RunLimits,
+    *,
+    stop_on_failure: bool = False,
+) -> BatchOutcome:
+    """Build and run a ref/brute on tests with the part's driver (function) or as a program."""
+    lang = get_language(src.lang)
+    path = problem_dir / src.file
+    try:
+        if part.mode == "stdio":
+            program = lang.build_program(path, cfg)
+            stdin = {t.id: stdin_for_test(part, t) for t in tests}
+            return run_program_tests(
+                program,
+                [t.case for t in tests],
+                stdin,
+                limits,
+                backend,
+                stop_on_failure=stop_on_failure,
+            )
+        built = lang.build(path, problem.slug, part, cfg)
+        return run_tests(
+            built, [t.case for t in tests], limits, backend, stop_on_failure=stop_on_failure
+        )
+    except CompileError as e:
+        raise OracleError(f"{src.file} does not compile:\n{e.render(path)}") from e
+
+
+def run_source(
     problem: Problem,
     problem_dir: Path,
     part: Part,
@@ -137,40 +181,35 @@ def _run_source(
     cfg: JudgeConfig,
     backend: MemoryBackend,
     timeout_s: float,
-) -> dict[str, _SourceRun]:
+) -> dict[str, SourceRun]:
     """Run one ref/brute on tests, with a per-test result cache."""
     key = _source_key(problem_dir, src)
     cdir = cache_dir() / "expected" / problem.slug / f"part{part.id}" / key[:24]
-    out: dict[str, _SourceRun] = {}
+    out: dict[str, SourceRun] = {}
     todo: list[JudgeTest] = []
     for t in tests:
         f = cdir / (digest(t.path.read_bytes())[:32] + ".json")
         if f.exists():
             d = json.loads(f.read_text(encoding="utf-8"))
-            out[t.id] = _SourceRun(d["status"], d["output"], d["time_ms"], d["message"])
+            out[t.id] = SourceRun(d["status"], d["output"], d["time_ms"], d["message"])
         else:
             todo.append(t)
     if not todo:
         return out
-    lang = get_language(src.lang)
-    try:
-        built = lang.build(problem_dir / src.file, problem.slug, part, cfg)
-    except CompileError as e:
-        raise OracleError(
-            f"{src.file} does not compile:\n{e.render(problem_dir / src.file)}"
-        ) from e
     limits = RunLimits(time_ms=None, memory_mb=None, wall_s=timeout_s)
-    outcome = run_tests(built, [t.case for t in todo], limits, backend, stop_on_failure=False)
+    outcome = run_raw(problem, problem_dir, part, src, todo, cfg, backend, limits)
     by_id = {r.id: r for r in outcome.results}
     cdir.mkdir(parents=True, exist_ok=True)
     for t in todo:
         r = by_id.get(t.id)
         run = (
-            _SourceRun(r.status, r.output, r.time_ms, r.message)
+            SourceRun(r.status, r.output, r.time_ms, r.message)
             if r
-            else _SourceRun("crash", None, 0.0, "no result")
+            else SourceRun("crash", None, 0.0, "no result")
         )
         out[t.id] = run
+        if run.status != "ok":
+            continue  # failures depend on timeouts and load: recompute them
         f = cdir / (digest(t.path.read_bytes())[:32] + ".json")
         f.write_text(
             json.dumps(
@@ -184,6 +223,11 @@ def _run_source(
             encoding="utf-8",
         )
     return out
+
+
+def stdin_for_test(part: Part, t: JudgeTest) -> Path:
+    """The stdin text file for a stdio test (rendered from its canonical args)."""
+    return stdin_file(t.path.read_text(encoding="utf-8"), render_input(part, t.args()))
 
 
 def resolve(
@@ -201,7 +245,10 @@ def resolve(
     ``calibration_tests`` (default: ``tests``) are the tests whose C++ ref timings set the
     auto time limit; pass the full suite so `run` and `submit` agree.
     """
-    check = get_checker(part.checker)
+    check = part_checker(part)
+    tests = [t for t in tests if not t.sealed]
+    if calibration_tests is not None:
+        calibration_tests = [t for t in calibration_tests if not t.sealed]
     calib = calibration_tests if calibration_tests is not None else tests
     all_tests = {t.id: t for t in [*calib, *tests]}
     universe = list(all_tests.values())
@@ -209,7 +256,7 @@ def resolve(
 
     if part.refs:
         runs = {
-            r.file: _run_source(
+            r.file: run_source(
                 problem, problem_dir, part, r, universe, cfg, backend, cfg.ref_timeout_s
             )
             for r in part.refs
@@ -250,7 +297,7 @@ def resolve(
         source = "ref"
     elif part.brute:
         small = [t for t in universe if t.path.stat().st_size <= BRUTE_MAX_INPUT_BYTES]
-        runs1 = _run_source(
+        runs1 = run_source(
             problem, problem_dir, part, part.brute, small, cfg, backend, BRUTE_TIMEOUT_S
         )
         for t in small:

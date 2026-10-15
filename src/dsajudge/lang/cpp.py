@@ -9,8 +9,8 @@ from typing import Any
 
 from dsajudge.config import JudgeConfig, cache_dir
 from dsajudge.judge.cache import build_cached, digest, file_lock, run_tool, tool_version
-from dsajudge.lang.base import Built
-from dsajudge.lang.codegen import render, static, uses
+from dsajudge.lang.base import Built, Program
+from dsajudge.lang.codegen import render, static, stdio_ctx, uses
 from dsajudge.model.schema import Lang, Part
 from dsajudge.model.types import cpp_param, cpp_value
 
@@ -128,6 +128,30 @@ class Cpp:
             cwd=out,
             mem_overhead_mb=16,
             startup_s=1.0,
+            debug=debug,
+            env=env,
+        )
+
+    def stdio_stub(self, slug: str, part: Part) -> str:
+        return render("stdio_stub.cpp.j2", **stdio_ctx(slug, part))
+
+    def build_program(self, src: Path, cfg: JudgeConfig, *, debug: bool = False) -> Program:
+        flags = DEBUG_FLAGS if debug else list(cfg.cxx_flags)
+        pch = None if debug else _pch_dir(cfg)
+
+        def compile_fn(d: Path) -> None:
+            include = ["-I", str(pch)] if pch else []
+            run_tool([cfg.cxx, *flags, *include, "-o", "main", str(d / "sol.cpp")], cwd=d)
+
+        files = {"sol.cpp": src.read_text(encoding="utf-8")}
+        out = build_cached("cpp-stdio", files, [tool_version(cfg.cxx), *flags], compile_fn)
+        env = {"ASAN_OPTIONS": "detect_leaks=0:abort_on_error=0"} if debug else {}
+        return Program(
+            lang="cpp",
+            argv=[str(out / "main")],
+            cwd=out,
+            mem_overhead_mb=16,
+            startup_ms=0.0,
             debug=debug,
             env=env,
         )

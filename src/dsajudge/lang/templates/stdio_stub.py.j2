@@ -1,0 +1,16 @@
+# {{ title }}   (stdin / stdout)
+{% if input_lines -%}
+# Input format:
+{% for line in input_lines -%}
+#   {{ line }}
+{% endfor -%}
+{% endif -%}
+# Read the input from stdin and print the answer to stdout.
+import sys
+
+
+def main():
+    data = sys.stdin.read().split()
+
+
+main()

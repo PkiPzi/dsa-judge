@@ -171,3 +171,45 @@ def test_debug_build_catches_out_of_bounds(ident: Path, tmp_path: Path) -> None:
     report, stderr = debug_test(make_target(ident, 1, "cpp", src), Config(), "sample/1")
     assert report.verdict == Verdict.RE
     assert "out-of-bounds" in stderr or "__n < this->size()" in stderr or "Error" in stderr
+
+
+@pytest.mark.parametrize("lang", ["cpp", "python"])
+def test_memory_is_not_inflated_by_a_large_judge_process(
+    ident: Path, tmp_path: Path, lang: Lang
+) -> None:
+    """The kernel carries a parent's peak RSS into a child's ru_maxrss across exec.
+
+    `dsa build` holds big inputs in memory, so measuring with ru_maxrss would give every
+    solution an MLE under a small limit. Memory is read from the child's own VmHWM instead.
+    """
+    ballast = b"x" * (200 * 1024 * 1024)  # touched pages: raises this process's peak RSS
+    del ballast
+    code = (
+        cpp("return x;")
+        if lang == "cpp"
+        else "class Solution:\n    def f(self, x):\n        return x\n"
+    )
+    report = run(ident, tmp_path, lang, code, all_tests=True)
+    assert report.verdict == Verdict.AC, report.results[-1].message
+    assert report.max_mem_kb < 60 * 1024
+
+
+def test_stdio_memory_is_not_inflated_by_a_large_judge_process(home: Path, tmp_path: Path) -> None:
+    from dsajudge.judge.limits import detect_backend
+    from dsajudge.judge.runner import RunLimits
+    from dsajudge.judge.stdio import run_program, stdin_file
+    from dsajudge.lang import get_language
+
+    ballast = b"x" * (200 * 1024 * 1024)
+    del ballast
+    src = tmp_path / "sol.py"
+    src.write_text("print(1)\n")
+    program = get_language("python").build_program(src, Config().judge)
+    result, _ = run_program(
+        program,
+        stdin_file("t", "\n"),
+        "t",
+        RunLimits(time_ms=5000, memory_mb=64),
+        detect_backend("poll"),
+    )
+    assert result.status == "ok" and result.mem_kb < 60 * 1024

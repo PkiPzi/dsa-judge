@@ -7,8 +7,8 @@ from typing import Any
 
 from dsajudge.config import JudgeConfig
 from dsajudge.judge.cache import build_cached, run_tool, tool_version
-from dsajudge.lang.base import Built
-from dsajudge.lang.codegen import render, static, uses
+from dsajudge.lang.base import Built, Program
+from dsajudge.lang.codegen import render, static, stdio_ctx, uses
 from dsajudge.model.schema import Lang, Part
 from dsajudge.model.types import TypeNode, java_list_depth, java_type
 
@@ -149,5 +149,44 @@ class Java:
             cwd=out,
             mem_overhead_mb=192,
             startup_s=3.0,
+            debug=debug,
+        )
+
+    def stdio_stub(self, slug: str, part: Part) -> str:
+        return render("stdio_stub.java.j2", **stdio_ctx(slug, part))
+
+    def build_program(self, src: Path, cfg: JudgeConfig, *, debug: bool = False) -> Program:
+        files = {"Solution.java": IMPLICIT_IMPORTS + src.read_text(encoding="utf-8")}
+
+        def compile_fn(d: Path) -> None:
+            run_tool(
+                [
+                    cfg.javac,
+                    "-encoding",
+                    "UTF-8",
+                    "-nowarn",
+                    "-d",
+                    "classes",
+                    str(d / "Solution.java"),
+                ],
+                cwd=d,
+            )
+
+        out = build_cached("java-stdio", files, [tool_version(cfg.javac)], compile_fn)
+        return Program(
+            lang="java",
+            argv=[
+                cfg.java,
+                "-Xmx{mem}m",
+                "-Xss512m",
+                "-XX:+UseSerialGC",
+                "-Dfile.encoding=UTF-8",
+                "-cp",
+                str(out / "classes"),
+                "Solution",
+            ],
+            cwd=out,
+            mem_overhead_mb=192,
+            startup_ms=250.0,
             debug=debug,
         )

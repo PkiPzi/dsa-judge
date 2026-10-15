@@ -80,7 +80,12 @@ def open_part(
 
     sol = wd / language.sol_filename
     if not sol.exists():
-        sol.write_text(language.stub(problem.slug, part), encoding="utf-8")
+        stub = (
+            language.stdio_stub(problem.slug, part)
+            if part.mode == "stdio"
+            else language.stub(problem.slug, part)
+        )
+        sol.write_text(stub, encoding="utf-8")
 
     shutil.copyfile(problem_dir / part.statement, wd / "statement.md")
 

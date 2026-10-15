@@ -373,7 +373,22 @@ struct Timer {
     }
 };
 
+// Peak resident memory since exec. getrusage()'s ru_maxrss is not used first because the kernel
+// folds the *parent's* peak into a child's value across exec, so a big judge process would make
+// every solution look big.
 inline long peak_kb() {
+    if (FILE* f = fopen("/proc/self/status", "r")) {
+        char line[256];
+        long kb = -1;
+        while (fgets(line, sizeof line, f)) {
+            if (strncmp(line, "VmHWM:", 6) == 0) {
+                kb = strtol(line + 6, nullptr, 10);
+                break;
+            }
+        }
+        fclose(f);
+        if (kb >= 0) return kb;
+    }
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
     return ru.ru_maxrss;

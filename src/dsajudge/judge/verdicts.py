@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from dsajudge.model.canon import dumps, first_difference, shape
+from dsajudge.model.render import first_token_difference
 
 SMALL_IO_BYTES = 2048
 
@@ -64,6 +65,9 @@ class TestVerdict:
     has_got: bool = False
     message: str = ""
     run_only: bool = False
+    # stdio mode: input as the program saw it; expected/got are text, shown verbatim.
+    input_text: str | None = None
+    text_mode: bool = False
 
     @property
     def passed(self) -> bool:
@@ -135,6 +139,33 @@ def _io_size(r: TestVerdict) -> int:
     return size
 
 
+def _render_text_failure(console: Console, r: TestVerdict) -> None:
+    """stdio mode: show the program's input, expected and actual output as plain text."""
+
+    def block(label: str, text: str) -> None:
+        lines = text.rstrip("\n").split("\n")
+        shown = lines[:12]
+        console.print(f"  {label}:")
+        for ln in shown:
+            console.print(f"    {escape(ln[:200])}")
+        if len(lines) > len(shown):
+            console.print(f"    [dim]... ({len(lines)} lines)[/]")
+
+    text = r.input_text or ""
+    if len(text) <= SMALL_IO_BYTES:
+        block("input", text)
+        if r.has_expected:
+            block("expected", str(r.expected))
+        if r.has_got:
+            block("got", str(r.got))
+    else:
+        console.print(f"  input: {len(text.splitlines())} lines, {len(text)} bytes")
+    if r.has_expected and r.has_got:
+        d = first_token_difference(str(r.expected), str(r.got))
+        if d:
+            console.print(f"  first difference: {escape(d)}")
+
+
 def _diff(expected: Any, got: Any) -> list[str]:
     a = json.dumps(expected, indent=1, ensure_ascii=False).splitlines()
     b = json.dumps(got, indent=1, ensure_ascii=False).splitlines()
@@ -148,6 +179,9 @@ def render_failure(console: Console, r: TestVerdict) -> None:
     if r.message:
         for line in r.message.splitlines()[:40]:
             console.print(f"  [dim]{escape(line)}[/]")
+    if r.text_mode:
+        _render_text_failure(console, r)
+        return
     if r.args is None:
         return
     if _io_size(r) <= SMALL_IO_BYTES:

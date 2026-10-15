@@ -69,9 +69,10 @@ class BatchOutcome:
 class _Capture(threading.Thread):
     """Drain a pipe, keeping the first CAPTURE_LIMIT bytes."""
 
-    def __init__(self, stream: IO[bytes]) -> None:
+    def __init__(self, stream: IO[bytes], limit: int = CAPTURE_LIMIT) -> None:
         super().__init__(daemon=True)
         self.stream = stream
+        self.limit = limit
         self.buf = bytearray()
         self.truncated = False
 
@@ -84,7 +85,7 @@ class _Capture(threading.Thread):
             )
             if not chunk:
                 break
-            room = CAPTURE_LIMIT - len(self.buf)
+            room = self.limit - len(self.buf)
             if room > 0:
                 self.buf += chunk[:room]
             if len(chunk) > room:
@@ -232,12 +233,10 @@ def _run_process(
     if proc.poll() is None:
         kill_group(proc.pid)
     try:
-        _, status, rusage = os.wait4(proc.pid, 0)
+        _, status, _ = os.wait4(proc.pid, 0)
         proc.returncode = os.waitstatus_to_exitcode(status)
-        peak_kb = int(rusage.ru_maxrss)
     except ChildProcessError:
         proc.wait()
-        peak_kb = 0
     watchdog.stop()
     out_cap.join(timeout=2)
     err_cap.join(timeout=2)
@@ -261,7 +260,7 @@ def _run_process(
         stderr=stderr,
         failure=failure,
         failure_detail=detail,
-        peak_kb=max(peak_kb, watchdog.peak_kb),
+        peak_kb=watchdog.peak_kb,
     )
 
 

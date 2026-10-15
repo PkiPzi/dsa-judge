@@ -7,8 +7,8 @@ from typing import Any
 
 from dsajudge.config import JudgeConfig
 from dsajudge.judge.cache import build_cached, tool_version
-from dsajudge.lang.base import Built, CompileError
-from dsajudge.lang.codegen import render, uses
+from dsajudge.lang.base import Built, CompileError, Program
+from dsajudge.lang.codegen import render, stdio_ctx, uses
 from dsajudge.model.schema import Lang, Part
 from dsajudge.model.types import py_type
 
@@ -35,6 +35,16 @@ def _ctx(slug: str, part: Part) -> dict[str, Any]:
     }
 
 
+def _syntax_check(code: str) -> None:
+    try:
+        compile(code, "<build>/sol.py", "exec")
+    except SyntaxError as e:
+        line = f"<build>/sol.py:{e.lineno}:{e.offset or 0}: "
+        text = (e.text or "").rstrip("\n")
+        caret = " " * max((e.offset or 1) - 1, 0) + "^"
+        raise CompileError(f"{line}SyntaxError: {e.msg}\n    {text}\n    {caret}") from e
+
+
 class Python:
     name: Lang = "python"
     ext = "py"
@@ -50,13 +60,7 @@ class Python:
         self, src: Path, slug: str, part: Part, cfg: JudgeConfig, *, debug: bool = False
     ) -> Built:
         code = src.read_text(encoding="utf-8")
-        try:
-            compile(code, "<build>/sol.py", "exec")
-        except SyntaxError as e:
-            line = f"<build>/sol.py:{e.lineno}:{e.offset or 0}: "
-            text = (e.text or "").rstrip("\n")
-            caret = " " * max((e.offset or 1) - 1, 0) + "^"
-            raise CompileError(f"{line}SyntaxError: {e.msg}\n    {text}\n    {caret}") from e
+        _syntax_check(code)
         files = self.driver_files(slug, part)
         files["sol.py"] = code
         exe = cfg.python_exe()
@@ -67,6 +71,24 @@ class Python:
             cwd=out,
             mem_overhead_mb=32,
             startup_s=1.0,
+            debug=debug,
+            env={"PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0"},
+        )
+
+    def stdio_stub(self, slug: str, part: Part) -> str:
+        return render("stdio_stub.py.j2", **stdio_ctx(slug, part))
+
+    def build_program(self, src: Path, cfg: JudgeConfig, *, debug: bool = False) -> Program:
+        code = src.read_text(encoding="utf-8")
+        _syntax_check(code)
+        exe = cfg.python_exe()
+        out = build_cached("python-stdio", {"sol.py": code}, [tool_version(exe)], lambda d: None)
+        return Program(
+            lang="python",
+            argv=[exe, "-X", "utf8", "-B", str(out / "sol.py")],
+            cwd=out,
+            mem_overhead_mb=32,
+            startup_ms=40.0,
             debug=debug,
             env={"PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0"},
         )

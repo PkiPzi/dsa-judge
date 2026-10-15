@@ -130,6 +130,15 @@ class DB:
         ).fetchall()
         return {int(r[0]) for r in rows}
 
+    def has_accepted(self, slug: str, part: int, code_sha: str) -> bool:
+        """Was this exact code accepted by a full `submit` on this part?"""
+        row = self.conn.execute(
+            "SELECT 1 FROM attempts WHERE slug = ? AND part = ? AND kind = 'submit' "
+            "AND verdict = 'AC' AND code_sha = ? LIMIT 1",
+            (slug, part, code_sha),
+        ).fetchone()
+        return row is not None
+
     def unlocked_part(self, slug: str, nparts: int) -> int:
         """Lowest part without an accepted submit (the last part once all are solved)."""
         solved = self.solved_parts(slug)

@@ -112,15 +112,25 @@ def raise_stack_limit() -> str:
     return "unlimited" if soft == resource.RLIM_INFINITY else f"{soft // (1024 * 1024)} MB"
 
 
-def read_rss_kb(pid: int) -> int | None:
+def read_mem_kb(pid: int) -> tuple[int, int] | None:
+    """(current RSS, peak RSS since exec) in KB, or None once the process is gone.
+
+    Peak comes from VmHWM, which the kernel tracks for the current executable image. The
+    ``ru_maxrss`` from wait4/getrusage must not be used: across exec it keeps the *parent's*
+    peak, so a large judge process would inflate every solution's memory.
+    """
+    rss = hwm = 0
     try:
         with open(f"/proc/{pid}/status", encoding="ascii", errors="replace") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
-                    return int(line.split()[1])
+                    rss = int(line.split()[1])
+                elif line.startswith("VmHWM:"):
+                    hwm = int(line.split()[1])
+                    break
     except (OSError, ValueError, IndexError):
         return None
-    return 0
+    return rss, max(rss, hwm)
 
 
 class RssWatchdog(threading.Thread):
@@ -137,11 +147,11 @@ class RssWatchdog(threading.Thread):
 
     def run(self) -> None:
         while not self._stop_event.is_set():
-            rss = read_rss_kb(self.pid)
-            if rss is None:
+            mem = read_mem_kb(self.pid)
+            if mem is None:
                 return
-            self.peak_kb = max(self.peak_kb, rss)
-            if self.limit_kb is not None and rss > self.limit_kb:
+            self.peak_kb = max(self.peak_kb, mem[1])
+            if self.limit_kb is not None and mem[1] > self.limit_kb:
                 self.killed = True
                 kill_group(self.pid)
                 return

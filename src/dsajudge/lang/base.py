@@ -7,24 +7,10 @@ from pathlib import Path
 from typing import Protocol
 
 from dsajudge.config import JudgeConfig
+from dsajudge.errors import BUILD_PLACEHOLDER, CompileError
 from dsajudge.model.schema import Lang, Part
 
-BUILD_PLACEHOLDER = "<build>"
-
-
-class CompileError(Exception):
-    """Compilation (or syntax check) failed. ``output`` uses <build>/ for the build dir."""
-
-    def __init__(self, output: str) -> None:
-        super().__init__(output)
-        self.output = output
-
-    def render(self, src: Path | None = None) -> str:
-        text = self.output
-        if src is not None:
-            for name in ("sol.cpp", "Solution.java", "sol.py"):
-                text = text.replace(f"{BUILD_PLACEHOLDER}/{name}", str(src))
-        return text.replace(BUILD_PLACEHOLDER + "/", "")
+__all__ = ["BUILD_PLACEHOLDER", "Built", "CompileError", "Language", "Program"]
 
 
 @dataclass
@@ -47,6 +33,23 @@ class Built:
         ]
 
 
+@dataclass
+class Program:
+    """A compiled stdio program: reads stdin, writes stdout. ``argv`` may contain {mem}."""
+
+    lang: Lang
+    argv: list[str]
+    cwd: Path
+    mem_overhead_mb: int
+    # Fixed process start cost (JVM boot, interpreter start) that is not charged to the solution.
+    startup_ms: float
+    debug: bool = False
+    env: dict[str, str] = field(default_factory=dict)
+
+    def command(self, memory_mb: int) -> list[str]:
+        return [a.replace("{mem}", str(memory_mb)) for a in self.argv]
+
+
 class Language(Protocol):
     name: Lang
     ext: str
@@ -59,3 +62,7 @@ class Language(Protocol):
     def build(
         self, src: Path, slug: str, part: Part, cfg: JudgeConfig, *, debug: bool = False
     ) -> Built: ...
+
+    def stdio_stub(self, slug: str, part: Part) -> str: ...
+
+    def build_program(self, src: Path, cfg: JudgeConfig, *, debug: bool = False) -> Program: ...
