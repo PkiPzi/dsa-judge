@@ -93,6 +93,37 @@ def read_clipboard() -> str | None:
     return None
 
 
+def pick_files() -> list[Path]:
+    """Let the user multi-select inputs in KDE's file dialog (kdialog); order is fixed later."""
+    kdialog = shutil.which("kdialog")
+    if not kdialog:
+        raise IntakeError("no files given and kdialog is missing: sudo pacman -S kdialog")
+    exts = sorted(IMAGE_EXT | AUDIO_EXT | TEXT_EXT | set(CODE_EXT))
+    start = next(
+        (d for d in (Path.home() / "Pictures", Path.home() / "Downloads") if d.is_dir()),
+        Path.home(),
+    )
+    run = subprocess.run(
+        [
+            kdialog,
+            "--title",
+            "dsa add: pick photos, voice notes, code (Ctrl/Shift-click for several)",
+            "--multiple",
+            "--separate-output",
+            "--getopenfilename",
+            str(start),
+            " ".join(f"*{e}" for e in exts) + "|Question files\n*|All files",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    picked = [Path(line) for line in run.stdout.splitlines() if line.strip()]
+    if run.returncode != 0 or not picked:
+        raise IntakeError("nothing was picked")
+    return picked
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

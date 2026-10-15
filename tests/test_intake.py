@@ -17,7 +17,14 @@ from dsajudge.ai.synth import render_text_image
 from dsajudge.cli import app
 from dsajudge.config import dsa_home
 from dsajudge.gen.manifest import load_manifest
-from dsajudge.intake.sources import IntakeError, classify, collect, natural_key, order_sources
+from dsajudge.intake.sources import (
+    IntakeError,
+    classify,
+    collect,
+    natural_key,
+    order_sources,
+    pick_files,
+)
 from dsajudge.intake.transcribe import assemble, code_blocks, parse_sections, prepare_image
 from dsajudge.model.loader import load_problem
 from dsajudge.store.bank import problems_dir
@@ -374,8 +381,6 @@ def test_slug_collisions_and_unknown_inputs(
     weird.write_text("x")
     code, out = dsa("add", str(weird), "--slug", "other")
     assert code == 1 and "unsupported file type" in out
-    code, out = dsa("add", "--slug", "empty")
-    assert code == 1 and "nothing to add" in out
 
 
 # ---------------------------------------------------------------- followup and ref
@@ -690,3 +695,38 @@ def test_clipboard_and_typed_text_are_sources(
     # an empty clipboard is reported, not silently ignored
     code, out = dsa("add", "--clip", "--slug", "x")
     assert code == 2 and "clipboard is empty" in out
+
+
+def _fake_kdialog(bin_dir: Path, body: str) -> None:
+    bin_dir.mkdir()
+    exe = bin_dir / "kdialog"
+    exe.write_text("#!/bin/sh\n" + body)
+    exe.chmod(0o755)
+
+
+def test_pick_files_returns_the_dialog_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_kdialog(tmp_path / "bin", 'printf "/a/p 1.jpg\\n/a/note.m4a\\n"\n')
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    assert pick_files() == [Path("/a/p 1.jpg"), Path("/a/note.m4a")]
+
+
+def test_pick_files_reports_cancel_and_missing_kdialog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_kdialog(tmp_path / "bin", "exit 1\n")  # the user pressed Cancel
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    with pytest.raises(IntakeError, match="nothing was picked"):
+        pick_files()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    with pytest.raises(IntakeError, match="pacman -S kdialog"):
+        pick_files()
+
+
+def test_add_with_no_input_opens_the_picker(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    result = CliRunner().invoke(app, ["add", "--slug", "x"])
+    assert result.exit_code == 2 and "kdialog" in result.output

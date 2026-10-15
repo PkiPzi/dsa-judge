@@ -27,7 +27,7 @@ from dsajudge.doctor import run_checks
 from dsajudge.gen.manifest import load_disputes, load_manifest, part_tests_dir
 from dsajudge.intake import pipeline
 from dsajudge.intake.review import run_editor
-from dsajudge.intake.sources import IntakeError, read_clipboard
+from dsajudge.intake.sources import IntakeError, pick_files, read_clipboard
 from dsajudge.judge.limits import detect_backend, raise_stack_limit
 from dsajudge.judge.session import (
     JudgeError,
@@ -472,6 +472,16 @@ def _gather_texts(clip: bool, typed: bool) -> list[tuple[str, str]]:
     return texts
 
 
+def _files_or_pick(files: list[Path] | None, have_other_input: bool) -> list[Path]:
+    """No files, clipboard, typed text or resume: open the file dialog instead of erroring."""
+    if files or have_other_input:
+        return list(files or [])
+    try:
+        return pick_files()
+    except IntakeError as e:
+        fail(str(e))
+
+
 def _report_outcome(out: pipeline.Outcome) -> None:
     console.print(
         f"[green]added[/] [bold]{out.slug}[/]: {out.parts} part(s) built "
@@ -493,7 +503,9 @@ def _intake_call(fn: Callable[[], object]) -> object:
 def add(
     files: Annotated[
         list[Path] | None,
-        typer.Argument(help="Photos, voice notes, .txt/.md, or code (.cpp .cc .java .py)"),
+        typer.Argument(
+            help="Photos, voice notes, .txt/.md, or code (.cpp .cc .java .py); none: file dialog"
+        ),
     ] = None,
     slug: Annotated[str | None, typer.Option("--slug", help="Name for the problem")] = None,
     clip: Annotated[bool, typer.Option("--clip", help="Use the clipboard text")] = False,
@@ -506,8 +518,9 @@ def add(
     cfg = _config()
     env = _intake_env(cfg)
     texts = [] if resume else _gather_texts(clip, text)
+    paths = _files_or_pick(files, bool(texts) or bool(resume))
     out = _intake_call(
-        lambda: pipeline.add(env, slug=slug, files=list(files or []), texts=texts, resume=resume)
+        lambda: pipeline.add(env, slug=slug, files=paths, texts=texts, resume=resume)
     )
     assert isinstance(out, pipeline.Outcome)
     _report_outcome(out)
@@ -529,8 +542,9 @@ def followup(
     cfg = _config()
     env = _intake_env(cfg)
     texts = [] if resume else _gather_texts(clip, text)
+    paths = _files_or_pick(files, bool(texts) or resume)
     out = _intake_call(
-        lambda: pipeline.followup(env, slug, files=list(files or []), texts=texts, resume=resume)
+        lambda: pipeline.followup(env, slug, files=paths, texts=texts, resume=resume)
     )
     assert isinstance(out, pipeline.Outcome)
     _report_outcome(out)
