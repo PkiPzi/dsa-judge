@@ -51,6 +51,13 @@ class DslGenerator:
             args.append(v)
         return args
 
+    def value(self, rng: Rng, p: ParamSpec, env: dict[str, Any], test: TestSpec) -> Any:
+        """One value for ``p`` (used by the ops generator for constructor and call arguments)."""
+        try:
+            return self._param(rng, p, env, test)
+        except ExprError as e:
+            raise GenError(f"{p.name}: {e}") from e
+
     # ------------------------------------------------------------ helpers
 
     def _caps(self, kind: str) -> tuple[int, int]:

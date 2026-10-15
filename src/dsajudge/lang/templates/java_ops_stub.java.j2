@@ -1,0 +1,44 @@
+// {{ slug }} · part {{ part_id }} · {{ title }}
+// Run: dsa run    Submit: dsa submit
+// java.util.*, java.util.function.* and java.util.stream.* are imported for you, as on LeetCode.
+{%- if uses_listnode %}
+/**
+ * class ListNode {
+ *     int val;
+ *     ListNode next;
+ *     ListNode() {}
+ *     ListNode(int val) { this.val = val; }
+ *     ListNode(int val, ListNode next) { this.val = val; this.next = next; }
+ * }
+ */
+{%- endif %}
+{%- if uses_treenode %}
+/**
+ * class TreeNode {
+ *     int val;
+ *     TreeNode left;
+ *     TreeNode right;
+ *     TreeNode() {}
+ *     TreeNode(int val) { this.val = val; }
+ *     TreeNode(int val, TreeNode left, TreeNode right) { this.val = val; this.left = left; this.right = right; }
+ * }
+ */
+{%- endif %}
+class {{ class_name }} {
+
+    public {{ class_name }}({{ ctor_decl }}) {
+
+    }
+{% for m in methods %}
+    public {{ m.ret_java }} {{ m.name }}({{ m.params_decl }}) {
+
+    }
+{% endfor %}}
+
+/**
+ * Your {{ class_name }} object will be instantiated and called as such:
+ * {{ class_name }} obj = new {{ class_name }}({{ ctor_doc }});
+{%- for m in methods %}
+ * {% if not m.is_void %}{{ m.ret_java }} param_{{ loop.index }} = {% endif %}obj.{{ m.name }}({{ m.doc_args }});
+{%- endfor %}
+ */

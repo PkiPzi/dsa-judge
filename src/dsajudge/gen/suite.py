@@ -11,10 +11,16 @@ from dsajudge.config import JudgeConfig, PlanConfig
 from dsajudge.gen.custom import CustomGenerator, CustomValidator
 from dsajudge.gen.generate import DslGenerator
 from dsajudge.gen.manifest import sha256_text
+from dsajudge.gen.ops import OpsGenerator
 from dsajudge.gen.plan import TestSpec
-from dsajudge.gen.validator import validate_args
+from dsajudge.gen.validator import validate_args, validate_ops
 from dsajudge.gen.values import GenError
-from dsajudge.model.constraints import ParamSpec, parse_constraints
+from dsajudge.model.constraints import (
+    DesignSpecs,
+    ParamSpec,
+    parse_constraints,
+    parse_design_constraints,
+)
 from dsajudge.model.schema import Part
 
 # Bump when generator output for the same seed changes: old manifests then read as stale.
@@ -39,16 +45,35 @@ class _DslMany:
         return out
 
 
+class _OpsMany:
+    def __init__(self, gen: OpsGenerator) -> None:
+        self.gen = gen
+
+    def generate_many(self, tests: list[TestSpec]) -> list[list[Any]]:
+        out: list[list[Any]] = []
+        for t in tests:
+            try:
+                out.append(self.gen.generate(t))
+            except GenError as e:
+                raise GenError(f"{t.id} ({t.size}/{t.flavor}): {e}") from e
+        return out
+
+
 @dataclass
 class PartGen:
     specs: list[ParamSpec]
     generator: Generator
     custom: bool
     custom_validator: CustomValidator | None
+    ops: DesignSpecs | None = None
 
     def validate_many(self, inputs: list[list[Any]]) -> list[list[str]]:
         """Constraint violations for each input (empty list = valid)."""
-        errs = [validate_args(self.specs, a) for a in inputs]
+        if self.ops is not None:
+            ops = self.ops
+            errs = [validate_ops(ops, a) for a in inputs]
+        else:
+            errs = [validate_args(self.specs, a) for a in inputs]
         if self.custom_validator:
             todo = [i for i, e in enumerate(errs) if not e]
             for i, msg in zip(
@@ -71,7 +96,8 @@ def validate_script(problem_dir: Path, part: Part) -> Path | None:
 
 def load_part_gen(problem_dir: Path, part: Part, plan: PlanConfig, cfg: JudgeConfig) -> PartGen:
     """Specs plus the generator to use. Raises ConstraintError / GenError."""
-    specs = parse_constraints(part)
+    ops = parse_design_constraints(part) if part.mode == "ops" else None
+    specs = [] if ops is not None else parse_constraints(part)
     script = gen_script(problem_dir, part)
     if part.guarantees and script is None:
         raise GenError(
@@ -80,14 +106,18 @@ def load_part_gen(problem_dir: Path, part: Part, plan: PlanConfig, cfg: JudgeCon
             "(def generate(rng, size, flavor) -> list) so every generated input satisfies them"
         )
     vscript = validate_script(problem_dir, part)
-    generator: Generator = (
-        CustomGenerator(script, cfg) if script else _DslMany(DslGenerator(specs, plan))
+    dsl: Generator = (
+        _OpsMany(OpsGenerator(ops, plan))
+        if ops is not None
+        else _DslMany(DslGenerator(specs, plan))
     )
+    generator: Generator = CustomGenerator(script, cfg) if script else dsl
     return PartGen(
         specs=specs,
         generator=generator,
         custom=script is not None,
         custom_validator=CustomValidator(vscript, cfg) if vscript else None,
+        ops=ops,
     )
 
 
@@ -99,7 +129,7 @@ def spec_hash(problem_dir: Path, part: Part, plan: PlanConfig) -> str:
         validate_script(problem_dir, part),
         checker if checker.is_file() else None,
     ]
-    parts = {
+    parts: dict[str, Any] = {
         "gen_version": GEN_VERSION,
         "mode": part.mode,
         "signature": part.signature.model_dump(mode="json") if part.signature else None,
@@ -111,4 +141,6 @@ def spec_hash(problem_dir: Path, part: Part, plan: PlanConfig) -> str:
         "plan": plan.model_dump(mode="json"),
         "scripts": [sha256_text(s.read_text(encoding="utf-8")) if s else None for s in scripts],
     }
+    if part.design is not None:  # only ops parts, so older manifests keep their hash
+        parts["design"] = part.design.model_dump(mode="json", by_alias=True)
     return sha256_text(json.dumps(parts, sort_keys=True, default=str))

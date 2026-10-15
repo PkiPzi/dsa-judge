@@ -149,3 +149,81 @@ renders the expected result. Output is compared token by token (whitespace-insen
 
 Java solutions are `public class Solution` with `main`, as on HackerRank. Time is wall clock minus
 the language's fixed start-up cost (JVM boot, interpreter start).
+
+### Exporting stdio parts
+
+`dsa export SLUG [--part N] [--format hackerrank|hackerearth|both] [--count N|all|auto]` writes a
+test-case zip into `$DSA_HOME/export/SLUG/` plus a `.notes.txt` listing each test, its score and
+anything skipped. Formats follow the vendors' help centres (checked 2026-10-15):
+
+| | HackerRank | HackerEarth |
+|---|---|---|
+| Files | `input00.txt` / `output00.txt` pairs | `in00.txt` / `out00.txt` pairs |
+| Zip | flat, no sub-directories | flat, "not put in a folder" |
+| Input rules | none documented | no blank lines, no leading whitespace on the first line, no trailing whitespace |
+| Scores | 10 each on upload | you assign them; the notes suggest a split that totals 100 |
+| Default count | 15 (their 3-15 guidance) | 10 (their recommendation) |
+
+Sources: [HackerRank: upload all test cases at once](https://support.hackerrank.com/articles/5773853281-how-do-i-upload-all-test-cases-at-once),
+[HackerEarth: creating custom programming questions](https://help.hackerearth.com/hc/en-us/articles/360005444233-creating-custom-programming-questions),
+[HackerEarth: test case format](https://help.hackerearth.com/hc/en-us/articles/9810665517081-test-case-format).
+
+The samples always come first. With fewer tests than the suite holds, the rest are spread over
+`edge`, `small_random`, `medium_random` and `max` (weighted toward `max`). Tests whose input a
+platform would reject (an empty array rendering a blank line, for HackerEarth) are skipped and
+listed. Answers come only from running a ref (or the flagged brute); tests with no answer
+(`brute-only` max tests) are never exported. Zips are byte-for-byte reproducible.
+
+## Design problems (`mode: ops`)
+
+For "implement an LRU cache" style questions: a class with a constructor and methods, judged on a
+sequence of calls in LeetCode's wire format. A test input is two lines, the operation names (the
+class name first) and one argument list per operation; the expected output has one result per
+operation, `null` for the constructor and for `void` methods. `dsa run --case` takes the same two
+lines.
+
+```yaml
+mode: ops
+design:
+  class: MinStack
+  counters: {size: 0}                   # tracked by the generator only (see below)
+  methods:
+    - {name: push, params: [{name: val, type: int}], effects: {size: 1}}
+    - {name: pop, requires: {size: 1}, effects: {size: -1}}
+    - {name: top, returns: int, requires: {size: 1}}
+    - {name: getMin, returns: int, requires: {size: 1}}
+constraints:
+  calls: {len: [1, 1e5], mix: {push: 3, pop: 1, top: 1, getMin: 6}}
+  push: {val: {range: [-1e4, 1e4]}}
+samples:
+  - args: [["MinStack","push","push","getMin"], [[],[5],[2],[]]]
+    expected: [null, null, null, 2]
+```
+
+* `design.constructor` lists the constructor's params (omit if none); method params and `returns`
+  use the usual types (`returns` defaults to `void`).
+* `constraints.calls.len` is the number of method calls after the constructor; `mix` gives each
+  method's relative frequency (default 1; omitted methods in a given `mix` are never called).
+* `constraints.ctor` has one spec per constructor param; each method has an entry with one spec
+  per param (the key names are the method names, so `calls` and `ctor` are reserved). Bounds may
+  use constructor params and earlier params of the same call: `key: {range: [0, "2 * capacity"]}`
+  makes an LRU cache's keys collide often enough to evict. Constructor values scale with the test
+  size like array lengths do, so small tests have small capacities.
+* **Counters** keep sequences legal without a custom generator. A method with
+  `requires: {size: 1}` is only called while `size >= 1`; `effects` change the counters after the
+  call. A counter starts at an int or an expression over constructor params (`size: "len(xs)"`).
+  For anything else (a promise like "keys are never reused"), use `guarantees` and a `gen.py`
+  returning `[ops, args]`.
+* Flavors shape the sequence: `asc` makes methods that raise a counter 4x as likely (the
+  structure gets big, which is what exposes an O(n) `getMin`), `desc` builds for the first half
+  and then drains. A "small" test allows 4x the usual small length, since stateful bugs need a
+  few dozen calls.
+* Refs and brutes are classes in any language and must agree on every test, like any other part;
+  the C++ stub is `class MinStack { public: ... };`, Java `class MinStack`, Python
+  `class MinStack:`. Time is the sum of the time spent inside the constructor and method calls.
+* A wrong answer names the first call that differs: `call #7 getMin() returned -3, expected -2`.
+  Stress mismatches are shrunk by deleting calls, so you see a handful of them.
+* Checkers: `exact`, `float:EPS` or `custom`. `unordered` does not apply to a result list.
+* Not supported yet: AI-assisted intake of design problems. The extraction pass only knows
+  function and stdio signatures, so write the `design:` block by hand (or edit it in during the
+  review) and put the statement, refs and brute in the problem directory; `dsa import DIR` adds it.

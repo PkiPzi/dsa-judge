@@ -44,7 +44,7 @@ def test_db_sessions_meta_and_reopen(tmp_path: Path) -> None:
     with DB(path) as db:  # migrations are idempotent
         assert db.get_meta("k") == "v"
         assert db.last_failed_test("s", 1) == "sample/2"
-        assert int(db.conn.execute("PRAGMA user_version").fetchone()[0]) == 1
+        assert int(db.conn.execute("PRAGMA user_version").fetchone()[0]) == 2
 
 
 def test_bank_import_and_seed(home: Path) -> None:

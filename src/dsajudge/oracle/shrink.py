@@ -113,15 +113,54 @@ def candidates(args: list[Any]) -> list[list[Any]]:
     return uniq[:MAX_CANDIDATES]
 
 
+def ops_candidates(args: list[Any]) -> list[list[Any]]:
+    """Simplifications of a call sequence ``[ops, arglists]``: drop calls (a chunk, then single
+    calls) or simplify one call's scalar arguments. The constructor call always stays."""
+    ops, arglists = args
+    n = len(ops)
+    out: list[list[Any]] = []
+
+    def without(lo: int, hi: int) -> list[Any]:
+        return [ops[:lo] + ops[hi:], arglists[:lo] + arglists[hi:]]
+
+    size = (n - 1) // 2
+    while size >= 1:
+        for lo in _positions(n - size + 1, 16):
+            if lo >= 1:
+                out.append(without(lo, lo + size))
+        size //= 2
+    for i in _positions(n, 24):
+        if i >= 1:
+            out.append(without(i, i + 1))
+    for i in _positions(n, 16):
+        for j, v in enumerate(arglists[i]):
+            for c in _simpler_scalar(v)[:2]:
+                if isinstance(v, list | dict):
+                    continue
+                new_args = [*arglists[i][:j], c, *arglists[i][j + 1 :]]
+                out.append([ops, [*arglists[:i], new_args, *arglists[i + 1 :]]])
+    seen: set[str] = set()
+    uniq: list[list[Any]] = []
+    for c in out:
+        key = dumps(c)
+        if key in seen or c == args:
+            continue
+        seen.add(key)
+        uniq.append(c)
+    uniq.sort(key=lambda c: len(dumps(c)))
+    return uniq[:MAX_CANDIDATES]
+
+
 def shrink(
     args: list[Any],
     valid: Callable[[list[list[Any]]], list[bool]],
     fails: Callable[[list[list[Any]]], list[bool]],
+    propose: Callable[[list[Any]], list[list[Any]]] = candidates,
 ) -> list[Any]:
     """Greedy shrink: take the smallest valid candidate that still fails, repeat."""
     current = args
     for _ in range(MAX_ROUNDS):
-        cands = candidates(current)
+        cands = propose(current)
         if not cands:
             break
         ok = valid(cands)

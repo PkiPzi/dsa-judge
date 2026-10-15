@@ -22,10 +22,14 @@ def db_path() -> Path:
 
 
 def repo_fixtures_dir() -> Path | None:
-    """Public fixtures in a source checkout (src/dsajudge/store/bank.py -> repo root)."""
+    """The public sample problems: the repo's fixtures in a source checkout, otherwise the copy
+    bundled in the installed wheel (src/dsajudge/store/bank.py -> repo root / package dir)."""
     root = Path(__file__).resolve().parents[3]
     d = root / "fixtures" / "problems"
-    return d if d.is_dir() and (root / "pyproject.toml").exists() else None
+    if d.is_dir() and (root / "pyproject.toml").exists():
+        return d
+    bundled = Path(__file__).resolve().parents[1] / "_fixtures" / "problems"
+    return bundled if bundled.is_dir() else None
 
 
 def list_slugs() -> list[str]:

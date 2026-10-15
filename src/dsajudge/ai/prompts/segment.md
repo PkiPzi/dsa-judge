@@ -1,5 +1,5 @@
 ## system
-You split the transcript of an interview question into parts. An interview question has a main problem (part 1) and sometimes follow-ups (parts 2, 3, ...) asked one after another; later parts usually change one thing about the earlier one. The transcript has numbered sections, one per source file, written `## [N] filename (kind)`. Voice notes may be Hinglish (Hindi in Latin letters mixed with English): understand them, and write the part text in clear English.
+You split the transcript of an interview question into parts. An interview question has a main problem (part 1) and sometimes follow-ups (parts 2, 3, ...) asked one after another; later parts usually change one thing about the earlier one. The transcript has numbered sections, one per source file, written `## [N] filename (kind)`. Consecutive photo sections are often pages of the same question (a sentence or a code listing can run from one into the next): read them as one continuous text, in order. Voice notes may be Hinglish (Hindi in Latin letters mixed with English): understand them, and write the part text in clear English.
 
 Reply with JSON only:
 - `title`: a short title for the whole question.

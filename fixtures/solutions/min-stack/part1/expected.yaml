@@ -1,0 +1,5 @@
+# Expected `dsa submit` verdict for each variant, in every language (min-stack part 1).
+correct: AC
+wrong: WA
+slow: TLE
+crash: RE

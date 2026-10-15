@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from dsajudge.model.expr import Expr, ExprError, Number, parse_expr
-from dsajudge.model.schema import Part
+from dsajudge.model.schema import OPS_RESERVED, Design, Param, Part
 from dsajudge.model.types import TypeNode
 
 Shape = Literal["any", "bst", "balanced", "line", "complete"]
@@ -365,16 +365,20 @@ def _sorted(param: str, d: dict[str, Any]) -> SortMode | None:
     return s  # type: ignore[no-any-return]
 
 
-def parse_constraints(part: Part) -> list[ParamSpec]:
-    """Typed specs in signature order, validated against the part's parameters."""
-    sig = part.sig
-    names = [p.name for p in sig.params]
-    for key in part.constraints:
+def _parse_params(
+    params: list[Param],
+    constraints: dict[str, Any],
+    owner: str,
+    outer: frozenset[str] = frozenset(),
+) -> list[ParamSpec]:
+    """Typed specs in parameter order. Bounds may refer to earlier parameters and to ``outer``."""
+    names = [p.name for p in params]
+    for key in constraints:
         if key not in names:
-            raise ConstraintError(key, f"not a parameter of {sig.method}({', '.join(names)})")
+            raise ConstraintError(key, f"not a parameter of {owner}({', '.join(names)})")
     specs: list[ParamSpec] = []
-    for p in sig.params:
-        raw = part.constraints.get(p.name)
+    for p in params:
+        raw = constraints.get(p.name)
         if raw is None:
             if p.tnode.kind == "scalar" and p.tnode.base == "bool":
                 raw = {}
@@ -383,7 +387,7 @@ def parse_constraints(part: Part) -> list[ParamSpec]:
         if not isinstance(raw, dict):
             raise ConstraintError(p.name, f"expected a mapping, got {raw!r}")
         spec = _parse_param(p.name, p.tnode, raw)
-        earlier = {s.name for s in specs}
+        earlier = outer | {s.name for s in specs}
         for b in spec.all_bounds():
             for ref in b.names():
                 if ref == p.name:
@@ -406,3 +410,75 @@ def parse_constraints(part: Part) -> list[ParamSpec]:
         ParamSpec(**{**s.__dict__, "is_size": s.name in used and s.range is not None})
         for s in specs
     ]
+
+
+def parse_constraints(part: Part) -> list[ParamSpec]:
+    """Typed specs in signature order, validated against the part's parameters."""
+    sig = part.sig
+    return _parse_params(sig.params, part.constraints, sig.method)
+
+
+@dataclass(frozen=True)
+class DesignSpecs:
+    """Parsed constraints of an ops part (see docs/CONSTRAINTS.md, "Design problems")."""
+
+    design: Design
+    calls: Bound  # number of method calls after the constructor
+    mix: dict[str, int]  # relative frequency of each method (0 = never called)
+    ctor: list[ParamSpec]
+    methods: dict[str, list[ParamSpec]]
+
+
+def parse_design_constraints(part: Part) -> DesignSpecs:
+    design = part.dsg
+    cons = part.constraints
+    method_names = [m.name for m in design.methods]
+    for key in cons:
+        if key not in (*OPS_RESERVED, *method_names):
+            raise ConstraintError(
+                key,
+                f"not a method of {design.class_name} "
+                f"(have calls, ctor, {', '.join(method_names)})",
+            )
+    calls_raw = cons.get("calls")
+    if not isinstance(calls_raw, dict) or "len" not in calls_raw:
+        raise ConstraintError("calls", "missing 'len': calls: {len: [lo, hi]}")
+    extra = sorted(set(calls_raw) - {"len", "mix"})
+    if extra:
+        raise ConstraintError("calls", f"unknown key {extra[0]!r} (allowed: len, mix)")
+    calls = _bound("calls", "len", calls_raw["len"], allow_single=True)
+    mix_raw = calls_raw.get("mix")
+    mix = {m: 1 for m in method_names}
+    if mix_raw is not None:
+        if not isinstance(mix_raw, dict):
+            raise ConstraintError("calls", "mix must be a mapping of method -> weight")
+        for k, w in mix_raw.items():
+            if k not in mix:
+                raise ConstraintError("calls", f"mix: {k!r} is not a method")
+            if isinstance(w, bool) or not isinstance(w, int) or w < 0:
+                raise ConstraintError("calls", f"mix: weight of {k} must be a whole number >= 0")
+            mix[k] = w
+        for k in mix:
+            if k not in mix_raw:
+                mix[k] = 0
+    if not any(mix.values()):
+        raise ConstraintError("calls", "mix: at least one method needs a weight above 0")
+
+    ctor_raw = cons.get("ctor", {})
+    if not isinstance(ctor_raw, dict):
+        raise ConstraintError("ctor", "expected a mapping of constructor parameter constraints")
+    ctor = _parse_params(design.constructor, ctor_raw, design.class_name)
+    # Constructor values (capacities, sizes) drive how much state the calls build up, so they
+    # scale with the test size like array lengths do.
+    ctor = [
+        ParamSpec(**{**s.__dict__, "is_size": s.range is not None and s.t.base in ("int", "long")})
+        for s in ctor
+    ]
+    outer = frozenset(p.name for p in design.constructor)
+    methods: dict[str, list[ParamSpec]] = {}
+    for m in design.methods:
+        raw = cons.get(m.name, {})
+        if not isinstance(raw, dict):
+            raise ConstraintError(m.name, "expected a mapping of parameter constraints")
+        methods[m.name] = _parse_params(m.params, raw, m.name, outer)
+    return DesignSpecs(design, calls, mix, ctor, methods)

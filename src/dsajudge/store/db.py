@@ -38,6 +38,20 @@ MIGRATIONS = [
     CREATE INDEX attempts_part ON attempts (slug, part);
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     """,
+    # v2: spaced-repetition reviews (Phase 4)
+    """
+    CREATE TABLE reviews (
+        id INTEGER PRIMARY KEY,
+        slug TEXT NOT NULL,
+        part INTEGER NOT NULL,
+        lang TEXT NOT NULL,
+        started_at REAL NOT NULL,
+        finished_at REAL,
+        outcome TEXT,
+        failed_submits INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX reviews_part ON reviews (slug, part);
+    """,
 ]
 
 
@@ -56,6 +70,34 @@ class Attempt:
     failed_test: str | None = None
     strict: bool = False
     code_sha: str | None = None
+    # Override the timestamp (tests); default is now.
+    created_at: float | None = None
+
+
+@dataclass
+class ReviewRow:
+    id: int
+    slug: str
+    part: int
+    lang: str
+    started_at: float
+    finished_at: float | None
+    outcome: str | None  # pass | shaky | fail | None while open
+    failed_submits: int
+
+
+@dataclass
+class AttemptRow:
+    slug: str
+    part: int
+    lang: str
+    kind: str
+    verdict: str
+    passed: int
+    total: int
+    max_time_ms: float
+    elapsed_s: float | None
+    created_at: float
 
 
 class DB:
@@ -83,11 +125,11 @@ class DB:
 
     # -------------------------------------------------------- sessions
 
-    def start_session(self, slug: str, part: int, lang: str) -> None:
+    def start_session(self, slug: str, part: int, lang: str, at: float | None = None) -> None:
         with self.conn:
             self.conn.execute(
                 "INSERT INTO sessions (slug, part, lang, started_at) VALUES (?, ?, ?, ?)",
-                (slug, part, lang, time.time()),
+                (slug, part, lang, at if at is not None else time.time()),
             )
 
     def session_started(self, slug: str, part: int) -> float | None:
@@ -118,7 +160,7 @@ class DB:
                     a.failed_test,
                     int(a.strict),
                     a.code_sha,
-                    time.time(),
+                    a.created_at if a.created_at is not None else time.time(),
                 ),
             )
 
@@ -187,3 +229,76 @@ class DB:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+    # -------------------------------------------------------- stats and reviews
+
+    def attempt_rows(self, since: float | None = None) -> list[AttemptRow]:
+        rows = self.conn.execute(
+            """SELECT slug, part, lang, kind, verdict, passed, total, max_time_ms, elapsed_s,
+                      created_at FROM attempts WHERE created_at >= ? ORDER BY id""",
+            (since if since is not None else 0.0,),
+        ).fetchall()
+        return [AttemptRow(*r) for r in rows]
+
+    def submitted_parts(self) -> list[tuple[str, int]]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT slug, part FROM attempts WHERE kind = 'submit' ORDER BY slug, part"
+        ).fetchall()
+        return [(str(s), int(p)) for s, p in rows]
+
+    def first_ac_at(self, slug: str, part: int) -> float | None:
+        row = self.conn.execute(
+            "SELECT MIN(created_at) FROM attempts "
+            "WHERE slug = ? AND part = ? AND kind = 'submit' AND verdict = 'AC'",
+            (slug, part),
+        ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+    def last_failed_submit_at(self, slug: str, part: int) -> float | None:
+        row = self.conn.execute(
+            "SELECT MAX(created_at) FROM attempts "
+            "WHERE slug = ? AND part = ? AND kind = 'submit' AND verdict != 'AC'",
+            (slug, part),
+        ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+    def failed_submits_since(self, slug: str, part: int, since: float, until: float) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM attempts WHERE slug = ? AND part = ? AND kind = 'submit' "
+            "AND verdict != 'AC' AND created_at >= ? AND created_at <= ?",
+            (slug, part, since, until),
+        ).fetchone()
+        return int(row[0])
+
+    def start_review(self, slug: str, part: int, lang: str, at: float | None = None) -> int:
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO reviews (slug, part, lang, started_at) VALUES (?, ?, ?, ?)",
+                (slug, part, lang, at if at is not None else time.time()),
+            )
+        assert cur.lastrowid is not None
+        return int(cur.lastrowid)
+
+    def finish_review(
+        self, review_id: int, outcome: str, failed_submits: int, at: float | None = None
+    ) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE reviews SET finished_at = ?, outcome = ?, failed_submits = ? WHERE id = ?",
+                (at if at is not None else time.time(), outcome, failed_submits, review_id),
+            )
+
+    def reviews_for(self, slug: str, part: int) -> list[ReviewRow]:
+        rows = self.conn.execute(
+            "SELECT id, slug, part, lang, started_at, finished_at, outcome, failed_submits "
+            "FROM reviews WHERE slug = ? AND part = ? ORDER BY id",
+            (slug, part),
+        ).fetchall()
+        return [ReviewRow(*r) for r in rows]
+
+    def all_reviews(self) -> list[ReviewRow]:
+        rows = self.conn.execute(
+            "SELECT id, slug, part, lang, started_at, finished_at, outcome, failed_submits "
+            "FROM reviews ORDER BY id"
+        ).fetchall()
+        return [ReviewRow(*r) for r in rows]

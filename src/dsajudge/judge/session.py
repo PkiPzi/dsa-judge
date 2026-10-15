@@ -27,7 +27,8 @@ from dsajudge.judge.testset import (
 from dsajudge.judge.verdicts import Report, TestVerdict, Verdict, overall
 from dsajudge.lang import get_language
 from dsajudge.lang.base import Built, CompileError, Program
-from dsajudge.model.canon import text_to_args
+from dsajudge.model.canon import canon_equal, text_to_args
+from dsajudge.model.design import check_sequence, describe_difference
 from dsajudge.model.loader import load_problem
 from dsajudge.model.render import render_input
 from dsajudge.model.schema import Lang, Part, Problem
@@ -66,6 +67,16 @@ def parse_custom_case(part: Part, text: str) -> list[Any]:
         args = text_to_args(text.replace("\\n", "\n"))
     except ValueError as e:
         raise JudgeError(str(e)) from e
+    if part.mode == "ops":
+        if len(args) != 2:
+            raise JudgeError(
+                f"custom case has {len(args)} value(s); {part.dsg.class_name} takes 2 lines: "
+                'the operations ["Cls","method",...] and one argument list per operation'
+            )
+        err = check_sequence(part.dsg, args[0], args[1], None, "custom case")
+        if err:
+            raise JudgeError(err)
+        return args
     params = part.sig.params
     if len(args) != len(params):
         raise JudgeError(
@@ -86,7 +97,7 @@ def time_limit_ms(base_ms: float, lang: Lang, cfg: Config) -> float:
 def _to_verdict(
     t: JudgeTest, r: RawResult, part: Part, check: PartChecker, *, with_io: bool
 ) -> TestVerdict:
-    names = [p.name for p in part.sig.params]
+    names = part.wire_names
     v = TestVerdict(
         id=t.id,
         verdict=Verdict.AC,
@@ -112,6 +123,8 @@ def _to_verdict(
                 v.verdict = Verdict.WA_UNVERIFIED if t.unverified else Verdict.WA
                 if why:
                     v.message = why
+                elif part.mode == "ops":
+                    v.message = _ops_message(t, check, r.output)
     elif r.status == "tle":
         v.verdict = Verdict.TLE
     elif r.status in ("mle", "oom"):
@@ -132,6 +145,15 @@ def _to_verdict(
         except (OSError, ValueError):
             v.args = None
     return v
+
+
+def _ops_message(t: JudgeTest, check: PartChecker, got: object) -> str:
+    """Name the first call whose result differs (the whole result list is rarely readable)."""
+    try:
+        ops, arglists = t.args()
+        return describe_difference(ops, arglists, t.expected, got, check.fn or canon_equal) or ""
+    except (OSError, ValueError, TypeError):
+        return ""
 
 
 def _relocate(results: list[RawResult], built: Built | Program, src: Path) -> None:

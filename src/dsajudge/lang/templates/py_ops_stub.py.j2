@@ -1,0 +1,31 @@
+# {{ slug }} · part {{ part_id }} · {{ title }}
+# Run: dsa run    Submit: dsa submit
+# typing (List, Optional, ...), collections, heapq, bisect, itertools and functools
+# are pre-imported, as on LeetCode.
+{%- if uses_listnode %}
+# class ListNode:
+#     def __init__(self, val=0, next=None):
+#         self.val = val
+#         self.next = next
+{%- endif %}
+{%- if uses_treenode %}
+# class TreeNode:
+#     def __init__(self, val=0, left=None, right=None):
+#         self.val = val
+#         self.left = left
+#         self.right = right
+{%- endif %}
+class {{ class_name }}:
+
+    def __init__(self{{ ctor_decl }}):
+        pass
+{% for m in methods %}
+    def {{ m.name }}(self{{ m.params_decl }}) -> {{ m.ret_py }}:
+        pass
+{% endfor %}
+
+# Your {{ class_name }} object will be instantiated and called as such:
+# obj = {{ class_name }}({{ ctor_call }})
+{%- for m in methods %}
+# {% if not m.is_void %}param_{{ loop.index }} = {% endif %}obj.{{ m.name }}({{ m.call_args }})
+{%- endfor %}

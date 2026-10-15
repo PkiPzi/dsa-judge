@@ -394,13 +394,13 @@ inline long peak_kb() {
     return ru.ru_maxrss;
 }
 
-inline void report(FILE* res, const std::string& id, const char* status, const Timer& t,
-                   const std::string& message, const std::string* output) {
+inline void report_ns(FILE* res, const std::string& id, const char* status, long long ns,
+                      const std::string& message, const std::string* output) {
     std::string line = "{\"id\":";
     put_str(line, id);
     line += ",\"status\":\"";
     line += status;
-    line += "\",\"time_ns\":" + std::to_string(t.ns());
+    line += "\",\"time_ns\":" + std::to_string(ns);
     line += ",\"mem_kb\":" + std::to_string(peak_kb());
     line += ",\"message\":";
     put_str(line, message);
@@ -409,6 +409,11 @@ inline void report(FILE* res, const std::string& id, const char* status, const T
     line += "}\n";
     std::fwrite(line.data(), 1, line.size(), res);
     std::fflush(res);
+}
+
+inline void report(FILE* res, const std::string& id, const char* status, const Timer& t,
+                   const std::string& message, const std::string* output) {
+    report_ns(res, id, status, t.ns(), message, output);
 }
 
 }  // namespace dsa

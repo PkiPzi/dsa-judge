@@ -11,7 +11,7 @@ from dsajudge.config import JudgeConfig, cache_dir
 from dsajudge.judge.cache import build_cached, digest, file_lock, run_tool, tool_version
 from dsajudge.lang.base import Built, Program
 from dsajudge.lang.codegen import render, static, stdio_ctx, uses
-from dsajudge.model.schema import Lang, Part
+from dsajudge.model.schema import Lang, Param, Part
 from dsajudge.model.types import cpp_param, cpp_value
 
 DEBUG_FLAGS = [
@@ -51,6 +51,52 @@ def _ctx(slug: str, part: Part) -> dict[str, Any]:
         "ret_cpp": cpp_value(sig.ret),
         "is_void": sig.ret.is_void,
         "output_var": out_var,
+        "uses_listnode": uses(types, "ListNode"),
+        "uses_treenode": uses(types, "TreeNode"),
+    }
+
+
+def _ops_ctx(slug: str, part: Part) -> dict[str, Any]:
+    d = part.dsg
+    types = [p.type for p in d.constructor]
+
+    def params(ps: list[Param], prefix: str) -> list[dict[str, str]]:
+        return [
+            {
+                "name": p.name,
+                "var": f"{prefix}{i}",
+                "cpp_value": cpp_value(p.tnode),
+                "cpp_param": cpp_param(p.tnode),
+            }
+            for i, p in enumerate(ps)
+        ]
+
+    ctor = params(d.constructor, "c")
+    methods = []
+    for m in d.methods:
+        ps = params(m.params, "a")
+        types += [p.type for p in m.params] + [m.returns]
+        methods.append(
+            {
+                "name": m.name,
+                "params": ps,
+                "params_decl": ", ".join(f"{p['cpp_param']} {p['name']}" for p in ps),
+                "call_args": ", ".join(p["var"] for p in ps),
+                "doc_args": ", ".join(p["name"] for p in ps),
+                "ret_cpp": cpp_value(m.ret),
+                "is_void": m.ret.is_void,
+            }
+        )
+    return {
+        "slug": slug,
+        "part_id": part.id,
+        "title": part.title,
+        "class_name": d.class_name,
+        "ctor": ctor,
+        "ctor_decl": ", ".join(f"{p['cpp_param']} {p['name']}" for p in ctor),
+        "ctor_call": ", ".join(p["var"] for p in ctor),
+        "ctor_doc": ", ".join(p["name"] for p in ctor),
+        "methods": methods,
         "uses_listnode": uses(types, "ListNode"),
         "uses_treenode": uses(types, "TreeNode"),
     }
@@ -97,9 +143,16 @@ class Cpp:
     sol_filename = "sol.cpp"
 
     def stub(self, slug: str, part: Part) -> str:
+        if part.mode == "ops":
+            return render("cpp_ops_stub.cpp.j2", **_ops_ctx(slug, part))
         return render("cpp_stub.cpp.j2", **_ctx(slug, part))
 
     def driver_files(self, slug: str, part: Part) -> dict[str, str]:
+        if part.mode == "ops":
+            return {
+                "main.cpp": render("cpp_ops_driver.cpp.j2", **_ops_ctx(slug, part)),
+                "dsa_json.hpp": static("dsa_json.hpp"),
+            }
         return {
             "main.cpp": render("cpp_driver.cpp.j2", **_ctx(slug, part)),
             "dsa_json.hpp": static("dsa_json.hpp"),

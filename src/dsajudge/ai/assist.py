@@ -84,6 +84,14 @@ class AssistContext:
 
 
 def signature_text(part: Part) -> str:
+    if part.mode == "ops":
+        d = part.dsg
+        calls = "; ".join(
+            f"{m.name}({', '.join(f'{p.name}: {p.type}' for p in m.params)}) -> {m.returns}"
+            for m in d.methods
+        )
+        ctor = ", ".join(f"{p.name}: {p.type}" for p in d.constructor)
+        return f"class {d.class_name}({ctor}): {calls}"
     sig = part.sig
     params = ", ".join(f"{p.name}: {p.type}" for p in sig.params)
     ret = sig.returns if not sig.ret.is_void else f"void (modifies {sig.output_param} in place)"

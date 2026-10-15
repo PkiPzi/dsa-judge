@@ -45,6 +45,7 @@ from dsajudge.intake.draft import (
 )
 from dsajudge.intake.review import Editor, ReviewAborted, review_loop, run_editor
 from dsajudge.intake.sources import IntakeError, SourceRec, classify, collect
+from dsajudge.intake.stitch import stitch_pages
 from dsajudge.intake.transcribe import (
     assemble,
     code_blocks,
@@ -140,8 +141,16 @@ def _transcribe(env: Env, inbox: Path, state: State) -> dict[int, str]:
         text = transcribe_one(rec, raw, work, vision, audio, env.cfg.ai.max_image_side)
         cached.write_text(text, encoding="utf-8")
         sections[rec.n] = text
-    (inbox / "transcript.md").write_text(assemble(state.sources, sections), encoding="utf-8")
-    return sections
+    # Photos of one question: drop overlapping lines, join a code listing split across photos.
+    stitched = stitch_pages(state.sources, sections)
+    for note in stitched.notes:
+        env.say(note)
+        if note not in state.notes:
+            state.notes.append(note)
+    (inbox / "transcript.md").write_text(
+        assemble(state.sources, stitched.sections), encoding="utf-8"
+    )
+    return stitched.sections
 
 
 def _segment(

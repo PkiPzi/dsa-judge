@@ -9,9 +9,11 @@ A local-first DSA practice judge.
 
 Nothing leaves your machine: AI runs on Ollama and whisper.cpp on localhost, and your problems live in `~/dsa-bank`, outside this repo.
 
-> Status: Phases 0-3 (skeleton, the function-mode judge, test generation with oracles, and local AI intake). Phase 3's real-model paths are only exercised on your machine: see [LOCAL_TESTING.md](LOCAL_TESTING.md). See [docs/PLAN.md](docs/PLAN.md) for the design and [docs/PROMPTS.md](docs/PROMPTS.md) for the build prompts.
+> Status: Phases 0-4 (skeleton, the function-mode judge, test generation with oracles, local AI intake, and polish: stats, spaced repetition, design problems, exports, completions, packaging). Phase 3's real-model paths are only exercised on your machine: see [LOCAL_TESTING.md](LOCAL_TESTING.md). See [docs/PLAN.md](docs/PLAN.md) for the design and [docs/PROMPTS.md](docs/PROMPTS.md) for the build prompts.
 
 ## Local setup (EndeavourOS / Arch)
+
+Full setup and troubleshooting: [docs/SETUP_AND_DEBUG.md](docs/SETUP_AND_DEBUG.md).
 
 ```bash
 # toolchains for the judge
@@ -31,6 +33,17 @@ uv run dsa doctor
 uv tool install --editable .
 ```
 
+## Install from PyPI
+
+```bash
+uv tool install dsajudge          # or: uv tool install 'dsajudge[ai]' for photo/voice intake
+dsa doctor
+dsa completions zsh --install     # shell completion (zsh, bash or fish); prints a one-line hint
+dsa open max-subarray             # the sample problems max-subarray, min-stack, lru-cache are bundled
+```
+
+Releases are built and uploaded by a tag-driven workflow: see [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Adding questions
 
 ```bash
@@ -39,6 +52,11 @@ dsa followup two-pass later-photo.jpg                               # appends pa
 dsa ref two-pass friend2.java --part 2                              # attach another reference solution
 dsa doctor --models                                                 # which local models are usable
 ```
+
+A question can come from several photos: give them all (`dsa add p1.jpg p2.jpg p3.jpg`). Each is
+transcribed on its own, then adjacent photos are stitched: lines repeated where two photos overlap
+are dropped, and a code listing that runs over the edge of one photo is joined to its
+continuation on the next (the review notes say what was joined).
 
 `dsa add` runs collect, transcribe (photos on a local vision model, voice on whisper.cpp), a
 segmentation pass and a per-part extraction pass (both JSON-schema constrained), the constraint
@@ -64,6 +82,35 @@ dsa debug                      # re-run the last failing test (C++: ASan/UBSan, 
 dsa watch                      # re-run the samples on every save
 dsa show                       # parts, oracle, hidden tests, status, best times
 ```
+
+## Progress, review and export
+
+```bash
+dsa stats [--days 30] [--tag dp] [--json]   # solved, first-try rate, median time, streak, per-language/tag
+dsa review                                  # what is due: 3, 7 and 21 days after an accepted submit
+dsa review start                            # fresh stub for the most overdue part (old code -> history/)
+dsa submit                                  # an AC finishes the review and schedules the next
+dsa review fail                             # give up: it comes back tomorrow
+dsa export SLUG --format hackerrank|hackerearth|both   # stdio parts -> test-case zip(s)
+```
+
+Parts that were submitted but never accepted come back after a day, sooner than solved ones.
+`dsa export` writes flat zips in each platform's documented layout, with the samples first (see
+[docs/CONSTRAINTS.md](docs/CONSTRAINTS.md#exporting-stdio-parts)).
+
+## Design problems
+
+`mode: ops` parts are classes judged on call sequences, LeetCode style ("implement an LRU
+cache"). `dsa open min-stack` gives you `class MinStack { ... }` in C++, Java or Python; the
+hidden tests are generated call sequences that keep stateful methods legal and build up enough
+state to expose slow operations. `dsa run --case` takes the two-line format:
+
+```bash
+dsa run --case '["MinStack","push","push","getMin"]
+[[],[5],[2],[]]'
+```
+
+See [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md#design-problems-mode-ops) to write one.
 
 ## Building hidden tests
 

@@ -1,0 +1,86 @@
+{% include "py_head.inc" %}
+CLASS = {{ class_name|pyrepr }}
+CTOR_TYPES = {{ ctor_types|pyrepr }}
+METHODS = {{ methods|pyrepr }}  # name -> {"params": [type, ...], "returns": type}
+{% include "py_common.inc" %}def main(res_fd, sol_path, state):
+    res = os.fdopen(res_fd, "w", encoding="utf-8", buffering=1)
+    mod = load_solution(sol_path)
+
+    def report(test_id, status, ns, message, output):
+        res.write(
+            json.dumps(
+                {
+                    "id": test_id,
+                    "status": status,
+                    "time_ns": ns,
+                    "mem_kb": peak_kb(),
+                    "message": message,
+                    "output": output,
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        res.flush()
+
+    class InputError(Exception):
+        pass
+
+    def convert_args(types_, raw, what):
+        if not isinstance(raw, list) or len(raw) != len(types_):
+            raise InputError(f"{what}: expected {len(types_)} argument(s), got {raw!r}")
+        return [convert_in(t, v) for t, v in zip(types_, raw)]
+
+    for line in sys.stdin:
+        line = line.rstrip("\n")
+        if "\t" not in line:
+            continue
+        test_id, path = line.split("\t", 1)
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = [json.loads(x) for x in f.read().splitlines() if x.strip()]
+            if len(raw) != 2:
+                raise InputError(f"expected 2 input lines (ops, args), got {len(raw)}")
+            ops, arglists = raw
+            if not ops or len(ops) != len(arglists) or ops[0] != CLASS:
+                raise InputError(f"ops must start with {CLASS!r} and match args in length")
+        except Exception as e:
+            report(test_id, "input", 0, repr(e), None)
+            continue
+        total = 0
+        status, message, output = "ok", "", None
+        where = "constructor"
+        try:
+            ctor_args = convert_args(CTOR_TYPES, arglists[0], CLASS)
+            cls = getattr(mod, CLASS)
+            t0 = time.perf_counter_ns()
+            obj = cls(*ctor_args)
+            total += time.perf_counter_ns() - t0
+            results = [None]
+            for i in range(1, len(ops)):
+                name = ops[i]
+                where = f"call #{i} {name}"
+                spec = METHODS.get(name)
+                if spec is None:
+                    raise InputError(f"unknown method {name!r}")
+                call_args = convert_args(spec["params"], arglists[i], name)
+                fn = getattr(obj, name)
+                t0 = time.perf_counter_ns()
+                ret = fn(*call_args)
+                total += time.perf_counter_ns() - t0
+                results.append(None if spec["returns"] == "void" else convert_out(spec["returns"], ret))
+            output = results
+        except InputError as e:
+            status, message = "input", str(e)
+        except MemoryError:
+            status, message = "oom", f"MemoryError in {where}"
+        except RecursionError as e:
+            status, message = "stackoverflow", f"{where}\n" + solution_trace(e, sol_path)
+        except BaseException as e:  # noqa: BLE001 - SystemExit from user code is a runtime error too
+            status, message = "exception", f"{where}\n" + solution_trace(e, sol_path)
+        report(test_id, status, total, message, output)
+    state["ok"] = True
+
+
+{% include "py_entry.inc" %}
