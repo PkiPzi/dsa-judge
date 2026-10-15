@@ -23,8 +23,12 @@ pytestmark = pytest.mark.local
 
 
 @pytest.fixture
-def cfg(home: Path) -> Config:
-    return load_config()
+def cfg(request: pytest.FixtureRequest) -> Config:
+    # Read the user's real config.toml (model names, whisper_model_dir) before `home`
+    # points DSA_HOME at a temp bank; otherwise these tests always see the defaults.
+    real = load_config()
+    request.getfixturevalue("home")
+    return real
 
 
 def require_ollama(cfg: Config, *models: str) -> None:

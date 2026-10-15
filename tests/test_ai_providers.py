@@ -145,9 +145,11 @@ def test_whisper_runs_the_cli_via_ffmpeg(tmp_path: Path, monkeypatch: pytest.Mon
     cli.write_text(
         "#!/bin/sh\n"
         'while [ $# -gt 0 ]; do case "$1" in -of) out="$2"; shift;; -f) wav="$2"; shift;; '
-        '-l) lang="$2"; shift;; esac; shift; done\n'
+        '-l) lang="$2"; shift;; -bs) bs="$2"; shift;; -bo) bo="$2"; shift;; '
+        '--prompt) prompt="$2"; shift;; esac; shift; done\n'
         '[ -s "$wav" ] || exit 3\n'
-        'printf "  ab  chalo   array  ka sum\\n(lang=%s)\\n" "$lang" > "$out.txt"\n'
+        'printf "  ab  chalo   array  ka sum\\n(lang=%s bs=%s bo=%s prompt=%s)\\n" '
+        '"$lang" "$bs" "$bo" "$prompt" > "$out.txt"\n'
     )
     cli.chmod(0o755)
     audio = tmp_path / "note.wav"
@@ -166,8 +168,19 @@ def test_whisper_runs_the_cli_via_ffmpeg(tmp_path: Path, monkeypatch: pytest.Mon
         ],
         check=True,
     )
-    t = WhisperCppTranscriber("small", binary=str(cli), model_dir=str(tmp_path), language="hi")
-    assert t.transcribe(audio) == "ab chalo array ka sum (lang=hi)"
+    t = WhisperCppTranscriber(
+        "small",
+        binary=str(cli),
+        model_dir=str(tmp_path),
+        language="hi",
+        beam_size=1,
+        prompt="aaj main solve kar raha hoon",
+    )
+    assert t.transcribe(audio) == (
+        "ab chalo array ka sum (lang=hi bs=1 bo=1 prompt=aaj main solve kar raha hoon)"
+    )
+    t.prompt = ""  # an empty prompt must not pass --prompt at all
+    assert t.transcribe(audio).endswith("prompt=)")
 
 
 # ---------------------------------------------------------------- prompts

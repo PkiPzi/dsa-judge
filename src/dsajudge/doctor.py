@@ -93,7 +93,7 @@ def run_checks(cfg: Config) -> list[Check]:
                 "whisper.cpp",
                 "warn",
                 "whisper-cli not found (voice notes, Phase 3)",
-                "yay -S whisper.cpp",
+                "sudo pacman -S whisper-cpp ggml-cuda",
             )
         )
 

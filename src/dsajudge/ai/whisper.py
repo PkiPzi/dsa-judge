@@ -52,12 +52,16 @@ class WhisperCppTranscriber:
         binary: str = "",
         model_dir: str = "",
         language: str = "auto",
+        beam_size: int = 1,
+        prompt: str = "",
         timeout: float = 1800.0,
     ) -> None:
         self.model = model
         self.binary = binary
         self.model_dir = model_dir
         self.language = language
+        self.beam_size = beam_size
+        self.prompt = prompt
         self.timeout = timeout
 
     def to_wav(self, audio: Path, out: Path) -> None:
@@ -90,7 +94,9 @@ class WhisperCppTranscriber:
     def transcribe(self, audio: Path) -> str:
         exe = find_binary(self.binary)
         if not exe:
-            raise AIError("whisper-cli not found: yay -S whisper.cpp (or set ai.whisper_bin)")
+            raise AIError(
+                "whisper-cli not found: pacman -S whisper-cpp ggml-cuda (or set ai.whisper_bin)"
+            )
         model = find_model(self.model, self.model_dir)
         if model is None:
             raise AIError(
@@ -110,6 +116,11 @@ class WhisperCppTranscriber:
                     str(wav),
                     "-l",
                     self.language,
+                    "-bs",
+                    str(self.beam_size),
+                    "-bo",
+                    str(self.beam_size),
+                    *(["--prompt", self.prompt] if self.prompt else []),
                     "-nt",
                     "-otxt",
                     "-of",
