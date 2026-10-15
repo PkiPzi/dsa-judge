@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -15,6 +17,8 @@ from rich.markup import escape
 from rich.table import Table
 
 from dsajudge import __version__
+from dsajudge import review as review_mod
+from dsajudge import stats as stats_mod
 from dsajudge.ai import factory as ai_factory
 from dsajudge.ai.base import AIError
 from dsajudge.config import Config, ConfigError, load_config
@@ -62,6 +66,14 @@ PRIVACY_NOTE = (
 LangOpt = Annotated[
     str | None, typer.Option("--lang", "-l", help="cpp, java or python (default: the work dir's)")
 ]
+
+
+def _slugs(incomplete: str) -> list[str]:
+    """Shell completion: problem slugs in the bank that start with what was typed."""
+    try:
+        return [s for s in list_slugs() if s.startswith(incomplete)]
+    except Exception:  # completion must never print a traceback into the user's prompt
+        return []
 
 
 def fail(msg: str, code: int = 2) -> NoReturn:
@@ -527,6 +539,235 @@ def show(
     console.print(table)
 
 
+# ------------------------------------------------------------------ stats and review
+
+
+def _bank_parts() -> list[stats_mod.BankPart]:
+    out: list[stats_mod.BankPart] = []
+    for slug in list_slugs():
+        try:
+            p = load_problem(find_problem(slug, seed_from_fixtures=False)[0])
+        except ProblemError:
+            continue
+        out += [stats_mod.BankPart(slug, part.id, p.tags) for part in p.parts]
+    return out
+
+
+@app.command()
+def stats(
+    days: Annotated[
+        int | None, typer.Option("--days", "-d", min=1, help="Only the last N days")
+    ] = None,
+    tag: Annotated[str | None, typer.Option("--tag", help="Only problems with this tag")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output")] = False,
+) -> None:
+    """Practice statistics: solved, first-try rate, solve times, languages, streaks."""
+    with DB(db_path()) as db:
+        st = stats_mod.collect(db, _bank_parts(), now=time.time(), days=days, tag=tag)
+    if as_json:
+        console.print_json(json.dumps(st.to_json()))
+        return
+    window = f"last {st.days} days" if st.days else "all time"
+    console.print(f"[bold]practice stats[/] [dim]({window}{', tag ' + tag if tag else ''})[/]")
+    console.print(
+        f"  bank: {st.parts_solved_all}/{st.parts_total} parts solved · "
+        f"{st.problems_solved_all}/{st.problems_total} problems fully solved"
+    )
+    rate = f"{100 * st.accepted_submits / st.submits:.0f}%" if st.submits else "-"
+    console.print(
+        f"  {st.submits} submits ({rate} accepted), {st.runs} runs · "
+        f"{st.parts_solved} part(s) first solved · {st.first_try} on the first submit"
+    )
+    if st.median_solve_min is not None:
+        console.print(f"  median time to first AC: {st.median_solve_min:.0f} min")
+    console.print(
+        f"  streak: {st.streak} day(s) (longest {st.longest_streak}) · "
+        f"{st.active_days} active day(s)"
+    )
+    console.print(
+        f"  last {len(st.activity)} days  {stats_mod.sparkline([n for _, n in st.activity])}"
+    )
+    if st.reviews_passed or st.reviews_shaky or st.reviews_failed:
+        console.print(
+            f"  reviews: {st.reviews_passed} passed, {st.reviews_shaky} shaky, "
+            f"{st.reviews_failed} failed"
+        )
+    if st.verdicts:
+        console.print(
+            "  verdicts: " + ", ".join(f"{v} {n}" for v, n in st.verdicts.items()),
+            highlight=False,
+        )
+    if st.langs:
+        table = Table("language", "submits", "accepted", "best time", box=None, pad_edge=False)
+        for name, ls in sorted(st.langs.items()):
+            table.add_row(
+                name,
+                str(ls.submits),
+                str(ls.accepted),
+                f"{ls.best_ms:.0f} ms" if ls.best_ms is not None else "-",
+            )
+        console.print(table)
+    if st.tags:
+        table = Table("tag", "solved", box=None, pad_edge=False)
+        for name, ts in sorted(st.tags.items()):
+            table.add_row(escape(name), f"{ts.solved}/{ts.parts}")
+        console.print(table)
+    for title, recs in (("slowest solves", st.slowest), ("most failed submits", st.hardest)):
+        if not recs:
+            continue
+        console.print(f"[bold]{title}[/]")
+        for r in recs:
+            when = f"{r.minutes:.0f} min" if r.minutes is not None else "-"
+            console.print(f"  {r.slug} part {r.part}: {when}, {r.failed_submits} failed submit(s)")
+
+
+review_app = typer.Typer(
+    help="Spaced repetition: re-solve accepted parts after 3, 7 and 21 days.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+app.add_typer(review_app, name="review")
+
+
+def _when(it: review_mod.ReviewItem, now: float) -> str:
+    if it.state == "in_progress":
+        return "[cyan]in progress[/]"
+    days = it.days_until_due(now)
+    if it.state == "due":
+        return "[red]due now[/]" if days > -1 else f"[red]overdue {-days:.0f} d[/]"
+    return f"in {max(days, 0):.0f} d" if days >= 1 else "in <1 d"
+
+
+def _review_items(now: float, db: DB) -> list[review_mod.ReviewItem]:
+    known = {(b.slug, b.part) for b in _bank_parts()}
+    return review_mod.queue(db, now, known=known)
+
+
+@review_app.callback()
+def review_list(
+    ctx: typer.Context,
+    all_: Annotated[
+        bool, typer.Option("--all", help="Include reviews that are not due yet")
+    ] = False,
+) -> None:
+    """Show the review queue (what is due now)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    now = time.time()
+    with DB(db_path()) as db:
+        items = _review_items(now, db)
+    titles: dict[str, str] = {}
+    shown = [i for i in items if all_ or i.state in ("due", "in_progress")]
+    if not shown:
+        waiting = [i for i in items if i.state == "upcoming"]
+        if waiting:
+            nxt = min(waiting, key=lambda i: i.due_at or 0.0)
+            console.print(
+                f"nothing due. Next: {nxt.slug} part {nxt.part} {_when(nxt, now)} "
+                "(`dsa review --all` lists everything)"
+            )
+        else:
+            console.print("no reviews yet: they appear 3 days after your first accepted submit")
+        return
+    table = Table("problem", "part", "why", "when", "reviews done")
+    for i in shown:
+        try:
+            titles[i.slug] = titles.get(i.slug) or load_problem(find_problem(i.slug)[0]).title
+        except ProblemError:
+            titles[i.slug] = i.slug
+        why = {
+            "unfinished": "never accepted",
+            "retry": "failed review",
+            "review": f"review {i.stage + 1}/{len(review_mod.INTERVALS_DAYS)}",
+        }[i.reason]
+        table.add_row(
+            f"{escape(titles[i.slug])} [dim]{i.slug}[/]",
+            str(i.part),
+            why,
+            _when(i, now),
+            str(i.stage),
+        )
+    console.print(table)
+    due = sum(1 for i in items if i.state == "due")
+    if due:
+        console.print("start one with `dsa review start` (most overdue first)")
+
+
+@review_app.command("start")
+def review_start(
+    slug: Annotated[
+        str | None, typer.Argument(help="Default: the most overdue", autocompletion=_slugs)
+    ] = None,
+    part: Annotated[int | None, typer.Option("--part", "-p", help="Part number")] = None,
+    lang: LangOpt = None,
+    no_editor: Annotated[
+        bool, typer.Option("--no-editor", help="Only create the work dir")
+    ] = False,
+    early: Annotated[
+        bool, typer.Option("--early", help="Review something that is not due yet")
+    ] = False,
+) -> None:
+    """Re-solve a part from a fresh stub (your old solution moves to history/)."""
+    cfg = _config()
+    now = time.time()
+    with DB(db_path()) as db:
+        items = _review_items(now, db)
+    want = ("due", "in_progress", "upcoming") if early else ("due", "in_progress")
+    cands = [
+        i
+        for i in items
+        if i.state in want and (slug is None or i.slug == slug) and (part is None or i.part == part)
+    ]
+    if not cands:
+        fail(
+            "nothing to review"
+            + (f" for {slug}" if slug else "")
+            + ("" if early else " (`dsa review --all` shows what is coming; --early skips ahead)")
+        )
+    pick = cands[0]
+    fresh = pick.state != "in_progress"
+    with DB(db_path()) as db:
+        review_mod.start(db, pick.slug, pick.part, _lang(lang, cfg.default_lang), now)
+    console.print(f"[bold]review[/] {pick.slug} part {pick.part}")
+    _open_for_practice(
+        cfg,
+        pick.slug,
+        pick.part,
+        _lang(lang, cfg.default_lang),
+        force=True,
+        fresh=fresh,
+        no_editor=no_editor,
+    )
+
+
+@review_app.command("fail")
+def review_fail(
+    slug: Annotated[
+        str | None, typer.Argument(help="Default: this work dir's", autocompletion=_slugs)
+    ] = None,
+    part: Annotated[int | None, typer.Option("--part", "-p", help="Part number")] = None,
+) -> None:
+    """Give up on an open review: it comes back tomorrow."""
+    if slug is None:
+        info = _here()
+        slug, part = info.slug, part or info.part
+    now = time.time()
+    with DB(db_path()) as db:
+        items = [
+            i
+            for i in _review_items(now, db)
+            if i.state == "in_progress" and i.slug == slug and (part is None or i.part == part)
+        ]
+        if not items:
+            fail(f"no review in progress for {slug}")
+        done = review_mod.give_up(db, slug, items[0].part, now)
+    assert done is not None
+    console.print(
+        f"[yellow]review failed[/] ({done.failed_submits} failed submit(s)); "
+        f"{slug} part {items[0].part} is due again in {done.next_days} day(s)"
+    )
+
+
 # ------------------------------------------------------------------ practice
 
 
@@ -543,9 +784,49 @@ def _launch_editor(info: WorkInfo, sol: Path) -> None:
         console.print(f"[yellow]editor {argv[0]!r} not found[/]")
 
 
+def _open_for_practice(
+    cfg: Config,
+    slug: str,
+    part: int | None,
+    lang: Lang,
+    *,
+    force: bool = False,
+    fresh: bool = False,
+    no_editor: bool = False,
+) -> tuple[WorkInfo, int]:
+    """Create the work dir for a part, start the timer, print where to go, open the editor."""
+    path, problem = _load(slug)
+    with DB(db_path()) as db:
+        unlocked = db.unlocked_part(slug, len(problem.parts))
+        part_id = part or unlocked
+        if not 1 <= part_id <= len(problem.parts):
+            fail(f"{slug} has parts 1..{len(problem.parts)}")
+        if part_id > unlocked and not force:
+            fail(f"part {part_id} is locked: get AC on part {unlocked} first (or --force to peek)")
+        info = open_part(path, problem, part_id, lang, dsa_command=cfg.dsa_command, fresh=fresh)
+        db.start_session(slug, part_id, lang)
+        first = db.get_meta("privacy_note_shown") is None
+        if first:
+            db.set_meta("privacy_note_shown", "1")
+    sol = info.sol_path()
+    pt = problem.part(part_id)
+    console.print(f"[bold]{escape(problem.title)}[/] · part {part_id}: {escape(pt.title)}")
+    console.print(f"  cd {info.dir}")
+    console.print(f"  edit {sol.name}, then `dsa run` / `dsa submit`")
+    if part_id > unlocked:
+        console.print(
+            "[yellow]peeking at a locked part: submits here won't unlock anything early[/]"
+        )
+    if first:
+        console.print(f"[dim]{escape(PRIVACY_NOTE)}[/]")
+    if not no_editor:
+        _launch_editor(info, sol)
+    return info, part_id
+
+
 @app.command("open")
 def open_cmd(
-    slug: Annotated[str | None, typer.Argument(help="Problem slug")] = None,
+    slug: Annotated[str | None, typer.Argument(help="Problem slug", autocompletion=_slugs)] = None,
     next_: Annotated[bool, typer.Option("--next", help="Open the first unsolved problem")] = False,
     lang: LangOpt = None,
     part: Annotated[int | None, typer.Option("--part", "-p", help="Part number")] = None,
@@ -570,33 +851,9 @@ def open_cmd(
             fail("every problem in the bank is solved")
     if slug is None:
         fail("give a SLUG or --next")
-    path, problem = _load(slug)
-    chosen = _lang(lang, cfg.default_lang)
-    with DB(db_path()) as db:
-        unlocked = db.unlocked_part(slug, len(problem.parts))
-        part_id = part or unlocked
-        if not 1 <= part_id <= len(problem.parts):
-            fail(f"{slug} has parts 1..{len(problem.parts)}")
-        if part_id > unlocked and not force:
-            fail(f"part {part_id} is locked: get AC on part {unlocked} first (or --force to peek)")
-        info = open_part(path, problem, part_id, chosen, dsa_command=cfg.dsa_command)
-        db.start_session(slug, part_id, chosen)
-        first = db.get_meta("privacy_note_shown") is None
-        if first:
-            db.set_meta("privacy_note_shown", "1")
-    sol = info.sol_path()
-    pt = problem.part(part_id)
-    console.print(f"[bold]{escape(problem.title)}[/] · part {part_id}: {escape(pt.title)}")
-    console.print(f"  cd {info.dir}")
-    console.print(f"  edit {sol.name}, then `dsa run` / `dsa submit`")
-    if part_id > unlocked:
-        console.print(
-            "[yellow]peeking at a locked part: submits here won't unlock anything early[/]"
-        )
-    if first:
-        console.print(f"[dim]{escape(PRIVACY_NOTE)}[/]")
-    if not no_editor:
-        _launch_editor(info, sol)
+    _open_for_practice(
+        cfg, slug, part, _lang(lang, cfg.default_lang), force=force, no_editor=no_editor
+    )
 
 
 @app.command()
@@ -661,6 +918,18 @@ def submit(
         unlocks = unlocks and target.part.id not in db.solved_parts(target.problem.slug)
     record(target, report, kind="submit", strict=strict)
     render_report(console, report, strict=strict, label=f"submit · {target.lang}")
+    if report.verdict == Verdict.AC:
+        with DB(db_path()) as db:
+            done = review_mod.on_accepted(db, target.problem.slug, target.part.id, time.time())
+        if done is not None:
+            when = (
+                f"next review in {done.next_days} day(s)"
+                if done.next_days is not None
+                else "no more reviews: this one is retired"
+            )
+            style = "green" if done.outcome == "pass" else "yellow"
+            fails = f"{done.failed_submits} failed submit(s)"
+            console.print(f"[{style}]review {done.outcome}[/] ({fails}); {when}")
     if report.verdict == Verdict.AC and unlocks:
         nxt = target.part.id + 1
         if nxt <= len(target.problem.parts):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,15 +70,45 @@ def tasks_json(dsa_command: str) -> str:
     return json.dumps(data, indent=2) + "\n"
 
 
+def archive_solution(wd: Path, filename: str) -> Path | None:
+    """Move the user's solution to ``history/`` (so a fresh stub can take its place)."""
+    sol = wd / filename
+    if not sol.exists():
+        return None
+    history = wd / "history"
+    history.mkdir(exist_ok=True)
+    stem, _, ext = filename.partition(".")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = history / f"{stem}.{stamp}.{ext}"
+    n = 1
+    while dest.exists():
+        dest = history / f"{stem}.{stamp}-{n}.{ext}"
+        n += 1
+    shutil.move(str(sol), str(dest))
+    return dest
+
+
 def open_part(
-    problem_dir: Path, problem: Problem, part_id: int, lang: Lang, *, dsa_command: str = "dsa"
+    problem_dir: Path,
+    problem: Problem,
+    part_id: int,
+    lang: Lang,
+    *,
+    dsa_command: str = "dsa",
+    fresh: bool = False,
 ) -> WorkInfo:
-    """Create or refresh the work dir for a part. Never overwrites the user's solution."""
+    """Create or refresh the work dir for a part. Never overwrites the user's solution.
+
+    With ``fresh`` (a review), the existing solution is moved to ``history/`` first and a new
+    stub takes its place.
+    """
     part = problem.part(part_id)
     language = get_language(lang)
     wd = part_dir(problem.slug, part_id)
     wd.mkdir(parents=True, exist_ok=True)
 
+    if fresh:
+        archive_solution(wd, language.sol_filename)
     sol = wd / language.sol_filename
     if not sol.exists():
         stub = (
