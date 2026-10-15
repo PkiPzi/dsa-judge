@@ -36,6 +36,29 @@ class JudgeConfig(_Strict):
         return self.python or sys.executable
 
 
+class PlanConfig(_Strict):
+    """Test plan (PLAN.md §6.2): how many tests per group and how big "small" is."""
+
+    edge: bool = True
+    small_random: int = 40
+    medium_random: int = 10
+    max: int = 6
+    stress_extra: int = 300
+    # Largest array length / node count in `small` and `medium` tests; 2-D dimensions
+    # (rows, cols) use the *_2d caps. `small` must stay brute-friendly.
+    small_cap: int = 8
+    small_cap_2d: int = 5
+    medium_cap: int = 100
+    medium_cap_2d: int = 20
+    # Brute-force oracles only run on inputs this small (serialized bytes).
+    brute_max_input_bytes: int = 20_000
+    brute_timeout_s: float = 10.0
+    # Longest the weak-test check lets the brute run on a max test.
+    weak_check_cap_s: float = 20.0
+    # Tests with inputs up to this size are stored in the bank; bigger ones are regenerated.
+    store_max_bytes: int = 64 * 1024
+
+
 class ModelsConfig(_Strict):
     text: str = "qwen2.5-coder:3b"
     vision: str = "qwen2.5vl:3b"
@@ -53,6 +76,7 @@ class Config(_Strict):
     # Command used in generated editor tasks; set to an absolute path if `dsa` is not on PATH.
     dsa_command: str = "dsa"
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
+    plan: PlanConfig = Field(default_factory=PlanConfig)
     ai: AIConfig = Field(default_factory=AIConfig)
 
 
