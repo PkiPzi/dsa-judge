@@ -1,0 +1,39 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# compiled solutions and judge scratch
+*.o
+*.out
+*.class
+a.out
+
+# NEVER commit real problems or practice work
+dsa-bank/
+bank/
+inbox/
+work/
+*.sqlite
+
+# local models and media
+*.gguf
+*.bin
+*.m4a
+*.opus
+*.ogg
+*.mp3
+*.wav
+*.heic
+
+# editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

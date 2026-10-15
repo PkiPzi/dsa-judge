@@ -1,0 +1,73 @@
+# PUBLIC FIXTURE: classic problems, statements written in our own words.
+# Exercises: C++ ref (part 1), Java ref from a "friend" (part 2),
+# a follow-up with no ref and an unverified LLM-style brute (part 3).
+# The schema here is the Phase 1 draft from docs/PLAN.md §4.2; update this
+# file if the final schema differs.
+schema: 1
+slug: max-subarray
+title: Maximum subarray sum, with follow-ups
+tags: [array, dp, kadane]
+source: public-fixture
+
+parts:
+  - id: 1
+    title: Maximum subarray sum
+    statement: part1/statement.md
+    mode: function
+    signature:
+      method: maxSubarraySum
+      params:
+        - {name: nums, type: "int[]"}
+      returns: int
+    constraints:
+      nums: {len: [1, 1e5], each: [-1e4, 1e4]}
+    samples:
+      - {args: [[3, -4, 5, -1, 2, -6, 1]], expected: 6}
+      - {args: [[-7, -3, -9]], expected: -3}
+      - {args: [[4]], expected: 4}
+    checker: exact
+    refs:
+      - {lang: cpp, file: part1/ref/ref.cpp, origin: user, verified: true}
+    brute: {lang: python, file: part1/brute.py, origin: user, verified: true}
+    limits: {time_ms: auto, memory_mb: 256}
+
+  - id: 2
+    title: "Follow-up: delete at most one element"
+    statement: part2/statement.md
+    mode: function
+    signature:
+      method: maxSumWithOneDeletion
+      params:
+        - {name: nums, type: "int[]"}
+      returns: int
+    constraints:
+      nums: {len: [1, 1e5], each: [-1e4, 1e4]}
+    samples:
+      - {args: [[2, -5, 3, -1, 4]], expected: 8}
+      - {args: [[-3, -1, -4]], expected: -1}
+      - {args: [[1, 2, 3]], expected: 6}
+    checker: exact
+    refs:
+      - {lang: java, file: part2/ref/Solution.java, origin: friend, verified: true}
+    brute: {lang: python, file: part2/brute.py, origin: user, verified: true}
+    limits: {time_ms: auto, memory_mb: 256}
+
+  - id: 3
+    title: "Follow-up: circular array"
+    statement: part3/statement.md
+    mode: function
+    signature:
+      method: maxCircularSubarraySum
+      params:
+        - {name: nums, type: "int[]"}
+      returns: int
+    constraints:
+      nums: {len: [1, 1e5], each: [-1e4, 1e4]}
+    samples:
+      - {args: [[5, -8, 6]], expected: 11}
+      - {args: [[-4, -2, -6]], expected: -2}
+      - {args: [[2, -1, 3, -10, 4]], expected: 8}
+    checker: exact
+    refs: []
+    brute: {lang: python, file: part3/brute.py, origin: llm, verified: false}
+    limits: {time_ms: 1000, memory_mb: 256}
