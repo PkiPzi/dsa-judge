@@ -69,9 +69,10 @@ class BatchOutcome:
 class _Capture(threading.Thread):
     """Drain a pipe, keeping the first CAPTURE_LIMIT bytes."""
 
-    def __init__(self, stream: IO[bytes]) -> None:
+    def __init__(self, stream: IO[bytes], limit: int = CAPTURE_LIMIT) -> None:
         super().__init__(daemon=True)
         self.stream = stream
+        self.limit = limit
         self.buf = bytearray()
         self.truncated = False
 
@@ -84,7 +85,7 @@ class _Capture(threading.Thread):
             )
             if not chunk:
                 break
-            room = CAPTURE_LIMIT - len(self.buf)
+            room = self.limit - len(self.buf)
             if room > 0:
                 self.buf += chunk[:room]
             if len(chunk) > room:

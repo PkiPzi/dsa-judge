@@ -58,3 +58,13 @@ def load_problem(problem_dir: Path, *, check_files: bool = True) -> Problem:
         if missing:
             raise ProblemError(f"{path}: missing files: {', '.join(missing)}")
     return problem
+
+
+def constraint_line(problem_dir: Path, part_id: int, param: str) -> int | None:
+    """1-based line of ``parts[part_id].constraints.<param>`` in problem.yaml, if findable."""
+    try:
+        data = YAML(typ="rt").load((problem_dir / "problem.yaml").read_text(encoding="utf-8"))
+        constraints = data["parts"][part_id - 1]["constraints"]
+        return int(constraints.lc.key(param)[0]) + 1
+    except Exception:
+        return None

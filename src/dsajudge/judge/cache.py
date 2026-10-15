@@ -13,7 +13,7 @@ from functools import cache
 from pathlib import Path
 
 from dsajudge.config import cache_dir
-from dsajudge.lang.base import BUILD_PLACEHOLDER, CompileError
+from dsajudge.errors import BUILD_PLACEHOLDER, CompileError
 
 OK_MARKER = "ok"
 CE_FILE = "ce.txt"

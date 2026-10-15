@@ -6,6 +6,8 @@ from collections.abc import Callable
 from typing import Any
 
 from dsajudge.model.canon import canon_equal, dumps, float_equal
+from dsajudge.model.render import get_text_checker
+from dsajudge.model.schema import Part
 
 Checker = Callable[[Any, Any], bool]
 
@@ -42,6 +44,13 @@ def check_unordered_deep(expected: Any, got: Any) -> bool:
     return canon_equal(_deep_sort(expected), _deep_sort(got))
 
 
+def part_checker(part: Part) -> Checker:
+    """The comparison for a part: canonical JSON values, or tokens of text in stdio mode."""
+    if part.mode == "stdio":
+        return get_text_checker(part.checker)
+    return get_checker(part.checker)
+
+
 def get_checker(spec: str) -> Checker:
     if spec == "exact":
         return check_exact
@@ -53,5 +62,5 @@ def get_checker(spec: str) -> Checker:
         eps = float(spec.split(":", 1)[1])
         return lambda e, g: float_equal(e, g, eps)
     if spec == "custom":
-        raise CheckerError("custom checkers (checker.py) arrive in Phase 2")
+        raise CheckerError("custom checkers (checker.py) arrive in Phase 3")
     raise CheckerError(f"unknown checker {spec!r}")

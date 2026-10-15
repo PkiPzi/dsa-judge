@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dsajudge.config import Config
-from dsajudge.judge.checkers import get_checker
+from dsajudge.judge.checkers import part_checker
 from dsajudge.judge.limits import MemoryBackend, detect_backend, raise_stack_limit
 from dsajudge.judge.runner import RawResult, RunLimits, run_tests
 from dsajudge.judge.testset import (
@@ -96,7 +96,7 @@ def _to_verdict(t: JudgeTest, r: RawResult, part: Part, *, with_io: bool) -> Tes
         v.got, v.has_got = r.output, True
         if not t.has_expected:
             v.run_only = True
-        elif not get_checker(part.checker)(t.expected, r.output):
+        elif not part_checker(part)(t.expected, r.output):
             v.verdict = Verdict.WA_UNVERIFIED if t.unverified else Verdict.WA
     elif r.status == "tle":
         v.verdict = Verdict.TLE

@@ -158,6 +158,8 @@ class Part(_Model):
     oracle: Literal["ref", "brute-only", "promoted"] | None = None
     limits: Limits = Field(default_factory=Limits)
     input_format: str | None = None
+    # stdio mode: how the expected result is printed; default "{result}".
+    output_format: str | None = None
 
     @field_validator("checker")
     @classmethod
@@ -172,9 +174,17 @@ class Part(_Model):
 
     @model_validator(mode="after")
     def _check(self) -> Part:
-        if self.mode == "function":
+        if self.mode == "function" and self.signature is None:
+            raise ValueError(f"part {self.id}: function mode needs a signature")
+        if self.mode == "stdio":
             if self.signature is None:
-                raise ValueError(f"part {self.id}: function mode needs a signature")
+                raise ValueError(
+                    f"part {self.id}: stdio mode needs a signature "
+                    "(its params and returns type describe the generated input and expected output)"
+                )
+            if not self.input_format:
+                raise ValueError(f"part {self.id}: stdio mode needs input_format")
+        if self.signature is not None:
             sig = self.signature
             for i, s in enumerate(self.samples, 1):
                 if len(s.args) != len(sig.params):
