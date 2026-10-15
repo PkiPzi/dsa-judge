@@ -29,6 +29,10 @@ MIN_LONG_LINE = 20  # a repeated run needs at least two lines this long
 QUOTE_MATCH = 0.75  # how closely the quoted first line must match a line of the page
 TITLE_MAX = 70  # a title line is at most this long
 FENCE = re.compile(r"^[ \t]*```")
+# a code block with nothing in it (what is left when a page's code was all overlap)
+EMPTY_FENCE = re.compile(
+    r"^[ \t]*```[\w+#-]*[ \t]*\n(?:[ \t]*\n)*[ \t]*```[ \t]*$\n?", re.MULTILINE
+)
 CUE = re.compile(r"^\s*(example\s*\d*|constraints?|input\s*:|output\s*:|sample)\b", re.IGNORECASE)
 # openings that continue a question instead of starting one
 NOT_A_STATEMENT = re.compile(
@@ -223,7 +227,7 @@ def drop_repeated_runs(sections: dict[int, str]) -> dict[int, str]:
                 drop.update(content[j : j + SHINGLE])
         seen.update(shingles(flat))
         kept = [ln for i, ln in enumerate(lines) if i not in drop]
-        out[n] = "\n".join(kept).strip("\n")
+        out[n] = EMPTY_FENCE.sub("", "\n".join(kept)).strip("\n")
     return out
 
 

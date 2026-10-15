@@ -8,13 +8,14 @@ Small models do much better on narrow prompts, and every answer is checked in co
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import ValidationError
 
 from dsajudge.ai.base import LLM, AIError
 from dsajudge.ai.retry import ask_structured
-from dsajudge.ai.schemas import ConstraintsOut, Extraction, Segmentation
+from dsajudge.ai.schemas import ConstraintsOut, Extraction, Segmentation, SegmentedPart
 from dsajudge.gen.validator import validate_args
 from dsajudge.intake.transcribe import code_blocks
 from dsajudge.model.canon import dumps
@@ -47,6 +48,36 @@ def segment(
         attempts=attempts,
         check=check,
     )
+
+
+FOLLOWUP = re.compile(
+    r"^\W*(follow[- ]?up|part\s*\d|now\b|what if|can you|could you|extend|modify|suppose"
+    r"|instead|variation|next\b)",
+    re.IGNORECASE,
+)
+
+
+def merge_false_followups(seg: Segmentation) -> Segmentation:
+    """For a transcript known to be ONE question: a later part is kept only if its text opens like
+    a labelled follow-up. A small model often cuts the statement from its constraints/examples
+    and calls the rest "part 2"; those pieces are joined back into the part before them."""
+    parts: list[SegmentedPart] = []
+    where: dict[int, int] = {}
+    for sp in seg.parts:
+        if parts and not FOLLOWUP.match(sp.text.lstrip()):
+            parts[-1] = SegmentedPart(part=parts[-1].part, text=f"{parts[-1].text}\n{sp.text}")
+        else:
+            parts.append(SegmentedPart(part=len(parts) + 1, text=sp.text))
+        where[sp.part] = len(parts)
+    code = []
+    taken: set[tuple[int, str, str]] = set()
+    for c in seg.code:
+        c = c.model_copy(update={"part": where.get(c.part, 1)})
+        key = (c.part, c.lang, c.role)
+        if key not in taken:  # two blocks for the same part/language/role: keep the first
+            taken.add(key)
+            code.append(c)
+    return Segmentation(title=seg.title, parts=parts, code=code)
 
 
 def part_model(ext: Extraction, constraints: dict[str, Any], part_id: int) -> Part:

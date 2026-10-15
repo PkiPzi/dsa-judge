@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from dsajudge.intake.bundle import group_pages, split_bundle
+from dsajudge.intake.bundle import drop_repeated_runs, group_pages, split_bundle
 from dsajudge.intake.sources import order_sources
 
 
@@ -132,3 +132,32 @@ def test_a_statement_after_code_is_a_new_question_even_if_the_model_misses_it() 
     )
     groups = split_bundle(Blind(), {1: STATEMENT_A + "Constraints:\n" + CODE_A, 2: cued})
     assert len(groups) == 2
+
+
+def test_false_followups_are_merged_but_real_ones_survive() -> None:
+    from dsajudge.ai.schemas import CodeBlockRef, Segmentation, SegmentedPart
+    from dsajudge.intake.structure import merge_false_followups
+
+    code = [
+        CodeBlockRef(section=2, lang="cpp", part=1),
+        CodeBlockRef(section=3, lang="cpp", part=2),  # same part/lang/role once merged: dropped
+        CodeBlockRef(section=4, lang="cpp", part=3),
+    ]
+    seg = Segmentation(
+        title="t",
+        parts=[
+            SegmentedPart(part=1, text="Given an array, return the sum."),
+            SegmentedPart(part=2, text="Constraints:\n1 <= n <= 5\nExample 1: ..."),
+            SegmentedPart(part=3, text="Follow-up: can you do it in O(1) space?"),
+        ],
+        code=code,
+    )
+    out = merge_false_followups(seg)
+    assert [p.part for p in out.parts] == [1, 2]
+    assert "Constraints:" in out.parts[0].text and out.parts[1].text.startswith("Follow-up")
+    assert [(c.section, c.part) for c in out.code] == [(2, 1), (4, 2)]
+
+
+def test_empty_code_blocks_left_by_overlap_trimming_are_removed() -> None:
+    sections = {1: "Count the islands in the grid.\n```cpp\n```\nConstraints: n <= 5\n"}
+    assert "```" not in drop_repeated_runs(sections)[1]

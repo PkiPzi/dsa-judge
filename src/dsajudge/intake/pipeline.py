@@ -98,6 +98,8 @@ class State(BaseModel):
     done: list[str] = Field(default_factory=list)
     transcribed_files: list[str] = Field(default_factory=list)  # draft files from photos/voice
     notes: list[str] = Field(default_factory=list)
+    single_question: bool = False  # bundle: the transcript is known to be one question
+    title_hint: str = ""  # bundle: the title the splitter found, for when the model gives none
 
 
 @dataclass
@@ -169,6 +171,10 @@ def _segment(
     seg = structure.segment(
         env.providers.text(env.cfg), transcript, sections, env.cfg.ai.max_attempts, context
     )
+    if state.single_question:
+        seg = structure.merge_false_followups(seg)
+    if not seg.title:
+        seg.title = state.title_hint
     path.write_text(seg.model_dump_json(indent=1) + "\n", encoding="utf-8")
     return seg
 
@@ -559,6 +565,12 @@ def add(
     return _run(env, inbox, state, "", None)
 
 
+ONE_QUESTION = (
+    "(This transcript is ONE interview question. Use a single part unless the text explicitly "
+    "labels a follow-up. Constraints, examples and notes belong to the same part.)\n\n"
+)
+
+
 class BundleItem(BaseModel):
     """One question found in a bundle, and what became of it."""
 
@@ -588,7 +600,14 @@ def _bundle_inbox(inbox: Path, state: State, sections: dict[int, str], g: Group,
         texts[new_n] = text
         (sub / "transcripts" / f"{new_n:02d}.md").write_text(text, encoding="utf-8")
     (sub / "transcript.md").write_text(assemble(recs, texts), encoding="utf-8")
-    sub_state = State(key=key, mode="add", sources=recs, done=["collect", "transcribe"])
+    sub_state = State(
+        key=key,
+        mode="add",
+        sources=recs,
+        done=["collect", "transcribe"],
+        single_question=True,
+        title_hint=g.title,
+    )
     save_state(sub, sub_state)
     return sub
 
@@ -652,7 +671,7 @@ def bundle(
                 item.status, item.slug = "built", sub_state.slug
             else:
                 env.say(f"question {i}/{len(groups)}")
-                out = _run(env, sub, sub_state, "", None, unattended=unattended)
+                out = _run(env, sub, sub_state, ONE_QUESTION, None, unattended=unattended)
                 item.slug = out.slug
                 if out.pending:
                     item.status, item.detail = "needs-review", out.pending[:400]
