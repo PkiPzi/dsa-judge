@@ -44,8 +44,11 @@ def review_loop(
     first_new_part: int = 1,
     notes: list[str] | None = None,
     say: Callable[[str], None] = lambda _m: None,
+    after_edit: Callable[[], None] = lambda: None,
 ) -> None:
-    """Open the draft until it validates. Emptying problem.yaml or a failing editor aborts."""
+    """Open the draft until it validates. Emptying problem.yaml or a failing editor aborts.
+    ``after_edit`` runs once the editor closes, before the draft is checked again (the tool can
+    redo what a fixed file makes possible, such as examples made from the solution)."""
     while True:
         refresh_header(problem_dir, first_new_part, notes)
         _, problem = examine(problem_dir, first_new_part)
@@ -57,6 +60,7 @@ def review_loop(
         if not path.exists() or not path.read_text(encoding="utf-8").strip():
             path.write_text(before, encoding="utf-8")  # aborting must not destroy the draft
             raise ReviewAborted("problem.yaml was emptied: review aborted, the draft is kept")
+        after_edit()
         findings, _ = examine(problem_dir, first_new_part)
         if not findings.errors:
             say("review accepted")

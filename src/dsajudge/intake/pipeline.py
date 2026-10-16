@@ -457,7 +457,10 @@ def _derive_samples(
                 "solution on small generated inputs: they show what it does, not the statement"
             )
         else:
-            notes.append(f"part {pid}: could not make examples from the solution: {why}")
+            notes.append(
+                f"part {pid}: could not make examples from the solution ({why}); fix the "
+                "solution file and save: they are made again when the editor closes"
+            )
     return notes
 
 
@@ -706,10 +709,15 @@ def _run(
             if got.constraints_note
         ]
         _mark(inbox, state, "draft")
+    by_part = {first_part + i: e for i, e in enumerate(extracted)}
+
+    def make_samples() -> None:
+        state.notes[:] = [n for n in state.notes if "could not make examples" not in n]
+        state.notes += _derive_samples(env, stage, first_part, by_part)
+        save_state(inbox, state)
+
     if "samples" not in state.done:
-        state.notes += _derive_samples(
-            env, stage, first_part, {first_part + i: e for i, e in enumerate(extracted)}
-        )
+        make_samples()
         _mark(inbox, state, "samples")
     if "assist" not in state.done:
         state.notes += _assist(env, stage, state, first_part)
@@ -729,7 +737,14 @@ def _run(
         state.notes.append("accepted without a human review (unattended run)")
         _mark(inbox, state, "review")
     if "review" not in state.done:
-        review_loop(stage, env.edit, first_new_part=first_part, notes=state.notes, say=env.say)
+        review_loop(
+            stage,
+            env.edit,
+            first_new_part=first_part,
+            notes=state.notes,
+            say=env.say,
+            after_edit=make_samples,
+        )
         _mark(inbox, state, "review")
     reports = _build_new(env, stage, first_part, state.transcribed_files)
     _publish(env, inbox, state, stage, first_part)
