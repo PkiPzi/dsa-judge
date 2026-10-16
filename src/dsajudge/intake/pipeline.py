@@ -183,6 +183,7 @@ class Extracted(BaseModel):
     extraction: Extraction
     constraints: dict[str, Any] = Field(default_factory=dict)
     constraints_error: str = ""
+    constraints_note: str = ""  # a guess the tool made, for the reviewer
 
 
 def _extract(
@@ -221,7 +222,19 @@ def _extract(
                 constraints = structure.fill_constraints(llm, ext, part_id, attempts)
             except AIError as e:
                 error = str(e)
-            got = Extracted(extraction=ext, constraints=constraints, constraints_error=error)
+            said = (ext.statement + " " + " ".join(ext.constraints_text)).lower()
+            note = "; ".join(
+                f"'{name}' has no stated alphabet: assumed {structure.ASSUMED_CHARSET}"
+                for name, c in constraints.items()
+                if c.get("charset") == structure.ASSUMED_CHARSET
+                and structure.ASSUMED_CHARSET not in said
+            )
+            got = Extracted(
+                extraction=ext,
+                constraints=constraints,
+                constraints_error=error,
+                constraints_note=note,
+            )
             path.write_text(got.model_dump_json(indent=1) + "\n", encoding="utf-8")
         out.append(got)
         prev = (got.extraction, got.constraints, base_part + sp.part)
@@ -507,6 +520,11 @@ def _run(
             f"{got.constraints_error}"
             for sp, got in zip(seg.parts, extracted, strict=True)
             if got.constraints_error
+        ]
+        state.notes += [
+            f"part {state.base_part + sp.part}: {got.constraints_note}"
+            for sp, got in zip(seg.parts, extracted, strict=True)
+            if got.constraints_note
         ]
         _mark(inbox, state, "draft")
     if "assist" not in state.done:

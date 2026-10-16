@@ -125,6 +125,7 @@ def method_from_code(current: str, codes: list[str]) -> str:
 BOUND_LINE = re.compile(r"\s*(?:<=|<|\u2264)\s*")
 LENGTH_OF = re.compile(r"^(?:(\w+)\.(?:length|size)(?:\(\))?|len\((\w+)\))$")
 ELEMENT_OF = re.compile(r"^(\w+)\[\w+\]$")
+ASSUMED_CHARSET = "lowercase"
 CHARSETS = (
     ("lowercase", "lowercase"),
     ("uppercase", "uppercase"),
@@ -143,7 +144,8 @@ def _bound(text: str) -> str:
 def constraints_from_text(ext: Extraction) -> dict[str, Any] | None:
     """The constraint DSL read straight off ``lo <= nums.length <= hi`` style lines, for the
     simple parameter types; None when something needed is missing (the model's answer, or a
-    human review, then decides). Callers must still validate the result."""
+    human review, then decides). A string with no stated alphabet is taken as lowercase. Callers
+    must still validate the result."""
     lens: dict[str, list[str]] = {}
     ranges: dict[str, list[str]] = {}  # element / scalar bounds
     for line in ext.constraints_text:
@@ -177,9 +179,11 @@ def constraints_from_text(ext: Extraction) -> dict[str, Any] | None:
                 return None
             out[p.name] = {"range": ranges[p.name]}
         elif p.type == "string":
-            if p.name not in lens or "" in lens[p.name] or not charset:
+            if p.name not in lens or "" in lens[p.name]:
                 return None
-            out[p.name] = {"len": lens[p.name], "charset": charset}
+            # no alphabet in the text: the narrowest guess can only thin the tests out, while a
+            # wider one could feed characters the real problem forbids
+            out[p.name] = {"len": lens[p.name], "charset": charset or ASSUMED_CHARSET}
         elif p.type in ("int[]", "long[]", "double[]"):
             rng = ranges.get(p.name)
             if p.name not in lens or "" in lens[p.name] or not rng or "" in rng:

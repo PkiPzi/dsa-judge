@@ -55,7 +55,10 @@ def test_constraints_are_read_off_plain_lines() -> None:
 def test_string_constraints_need_a_charset_from_the_wording() -> None:
     ext = _ext([("s", "string")], ["1 <= s.length <= 10^5"], "A string s of lowercase letters.")
     assert constraints_from_text(ext) == {"s": {"len": ["1", "10^5"], "charset": "lowercase"}}
-    assert constraints_from_text(_ext([("s", "string")], ["1 <= s.length <= 10^5"])) is None
+    # no alphabet stated anywhere: the narrowest one is assumed
+    assert constraints_from_text(_ext([("s", "string")], ["1 <= s.length <= 10^5"])) == {
+        "s": {"len": ["1", "10^5"], "charset": "lowercase"}
+    }
 
 
 def test_anything_unreadable_gives_none() -> None:
