@@ -38,7 +38,7 @@ def long_long(code: str) -> str:
     one do not convert to the other, so the solution is spelled the driver's way."""
     code = re.sub(r"\b(?:std::)?uint64_t\b", "unsigned long long", code)
     code = re.sub(r"\b(?:std::)?int64_t\b", "long long", code)
-    return re.sub(r"\blong\b(?!\s+(?:long|double))", "long long", code)
+    return re.sub(r"(?<!long )\blong\b(?!\s+(?:long|double))", "long long", code)
 
 
 def wrap_solution(code: str, lang: str, method: str) -> str:
