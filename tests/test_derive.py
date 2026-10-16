@@ -96,3 +96,62 @@ def test_unlinked_code_is_attached_to_a_single_part() -> None:
         title="t", parts=[SegmentedPart(part=1, text="x"), SegmentedPart(part=2, text="y")]
     )
     assert attach_unlinked_code(two, sections).code == []
+
+
+def test_bare_functions_get_a_solution_wrapper() -> None:
+    import subprocess
+    import sys
+    import tempfile
+
+    from dsajudge.intake.wrap import wrap_solution
+
+    py = wrap_solution("def gap(nums):\n    return max(nums)\n", "python", "gap")
+    ns: dict[str, object] = {}
+    exec(py, ns)
+    assert ns["Solution"]().gap([1, 5, 2]) == 5  # type: ignore[operator]
+    cpp = (
+        "#include <bits/stdc++.h>\nusing namespace std;\n"
+        "int helper(int x) { return x * 2; }\n"
+        "int gap(vector<int>& nums, int k) { return helper(nums[0]) + k; }\n"
+        "int main() { vector<int> a{1}; cout << gap(a, 2); }\n"
+    )
+    w = wrap_solution(cpp, "cpp", "gap")
+    assert "main" not in w and "class Solution" in w and "::gap(nums, k)" in w
+    with tempfile.TemporaryDirectory() as d:
+        src = f"{d}/t.cpp"
+        Path(src).write_text(
+            w + "int main() { vector<int> a{3}; return Solution().gap(a, 1) == 7 ? 0 : 1; }\n"
+        )
+        r = subprocess.run(["g++", "-std=c++17", src, "-o", f"{d}/t"], capture_output=True)
+        assert r.returncode == 0, r.stderr.decode()[:300]
+        assert subprocess.run([f"{d}/t"]).returncode == 0
+    java = wrap_solution(
+        "import java.util.*;\nint gap(int[] a) { return a[0]; }\npublic static void main(String[] x) { }\n",
+        "java",
+        "gap",
+    )
+    assert java.startswith("import java.util.*;\nclass Solution {") and "main" not in java
+    keep = "class Solution:\n    def gap(self, n):\n        return n\n"
+    assert wrap_solution(keep, "python", "gap") == keep
+    assert sys  # silence unused
+
+
+def test_only_the_last_solution_stays_a_ref_and_invented_samples_go() -> None:
+    from dsajudge.ai.schemas import Segmentation, SegmentedPart
+    from dsajudge.intake.structure import EXAMPLE_WORDS, final_refs
+
+    sections = {
+        1: "```python\ndef slow(a):\n    return 1\n```\n```python\ndef fast(a):\n    return 1\n```",
+        2: "```cpp\nint main() { return 0; }\n```",
+    }
+    codes = [
+        {"section": 1, "block": 1, "lang": "python", "part": 1},
+        {"section": 1, "block": 2, "lang": "python", "part": 1},
+        {"section": 2, "block": 1, "lang": "cpp", "part": 1},
+    ]
+    seg = Segmentation.model_validate(
+        {"title": "t", "parts": [SegmentedPart(part=1, text="x")], "code": codes}
+    )
+    assert [(c.section, c.block) for c in final_refs(seg, sections).code] == [(1, 2)]
+    assert not EXAMPLE_WORDS.search("Return the smallest gap in nums.")
+    assert EXAMPLE_WORDS.search("Example 1: nums = [1] -> 0")

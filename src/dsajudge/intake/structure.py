@@ -73,6 +73,31 @@ def attach_unlinked_code(seg: Segmentation, sections: dict[int, str]) -> Segment
     return seg
 
 
+def final_refs(seg: Segmentation, sections: dict[int, str]) -> Segmentation:
+    """Photographed solutions run from brute to optimized, often in several languages: of the
+    solutions linked to a part only the last one that defines a function stays a ref (the
+    optimized one); earlier ones would all have to agree with it and one OCR slip would sink
+    the build. Brutes are kept."""
+    keep: list[CodeBlockRef] = []
+    for part in {c.part for c in seg.code}:
+        refs = [c for c in seg.code if c.part == part and c.role == "ref"]
+        defines = [c for c in refs if _defines_function(c, sections)]
+        keep += (defines or refs)[-1:]
+    seg.code = [c for c in seg.code if c.role != "ref" or c in keep]
+    return seg
+
+
+def _defines_function(c: CodeBlockRef, sections: dict[int, str]) -> bool:
+    blocks = code_blocks(sections.get(c.section, ""))
+    if not 1 <= c.block <= len(blocks):
+        return False
+    code = blocks[c.block - 1][1]
+    named = (m.group("name") for m in SIG.finditer(code))
+    return any(n not in NOT_METHODS and n != "main" for n in named) or bool(
+        re.search(r"^\s*def\s+\w+", code, re.MULTILINE)
+    )
+
+
 FOLLOWUP = re.compile(
     r"^\W*(follow[- ]?up|part\s*\d|now\b|what if|can you|could you|extend|modify|suppose"
     r"|instead|variation|next\b)",
@@ -410,6 +435,9 @@ def apply_code_signature(ext: Extraction, codes: list[str]) -> None:
         return
 
 
+EXAMPLE_WORDS = re.compile(r"example|sample|input|output|e\.g\.|=>|->", re.IGNORECASE)
+
+
 def extract_part(
     llm: LLM,
     part_no: int,
@@ -428,12 +456,17 @@ def extract_part(
             ext.output_param = next(
                 (p.name for p in ext.params if p.type.endswith("]") or p.type[0].isupper()), None
             )
+        if not EXAMPLE_WORDS.search(text):
+            ext.samples = []  # the text has no examples: whatever the model listed is invented
         try:
             part_model(ext, {}, part_no)
-        except ValidationError as e:
-            return _pydantic_message(e)
-        except ValueError as e:
-            return str(e)
+        except (ValidationError, ValueError) as e:
+            msg = _pydantic_message(e) if isinstance(e, ValidationError) else str(e)
+            if re.search(r"\bsample \d", msg) and ext.samples:
+                # examples that do not fit the signature are dropped: the solution makes new ones
+                ext.samples = []
+                return check(ext)
+            return msg
         return None
 
     return ask_structured(

@@ -61,6 +61,7 @@ from dsajudge.intake.transcribe import (
     transcribe_halves,
     transcribe_one,
 )
+from dsajudge.intake.wrap import wrap_solution
 from dsajudge.judge.checkers import part_checker
 from dsajudge.judge.limits import MemoryBackend
 from dsajudge.judge.testset import (
@@ -229,7 +230,7 @@ def _segment(
     path = inbox / "segments.json"
     if path.exists():
         seg = Segmentation.model_validate_json(path.read_text(encoding="utf-8"))
-        return structure.attach_unlinked_code(seg, sections)
+        return structure.final_refs(structure.attach_unlinked_code(seg, sections), sections)
     env.say("splitting the transcript into parts")
     transcript = (inbox / "transcript.md").read_text(encoding="utf-8")
     seg = structure.segment(
@@ -239,7 +240,7 @@ def _segment(
         seg = structure.merge_false_followups(seg)
     if not seg.title:
         seg.title = state.title_hint
-    seg = structure.attach_unlinked_code(seg, sections)
+    seg = structure.final_refs(structure.attach_unlinked_code(seg, sections), sections)
     path.write_text(seg.model_dump_json(indent=1) + "\n", encoding="utf-8")
     return seg
 
@@ -352,7 +353,7 @@ def _write_parts(
             tag, code = code_blocks(sections[c.section])[c.block - 1]
             lang = rec.lang if rec.kind == "code" and rec.lang else _fence_lang(tag, c.lang)
             if rec.kind in ("image", "audio"):
-                code = comment_prose(code, lang)
+                code = wrap_solution(comment_prose(code, lang), lang, got.extraction.method)
             ext = get_language(lang).ext
             if c.role == "brute":
                 rel = f"part{pid}/brute.{ext}"
