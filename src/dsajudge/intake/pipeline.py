@@ -54,6 +54,7 @@ from dsajudge.intake.transcribe import (
     assemble,
     code_blocks,
     parse_sections,
+    transcribe_halves,
     transcribe_one,
 )
 from dsajudge.judge.checkers import part_checker
@@ -164,6 +165,14 @@ def _transcribe_robust(
             if rec.kind != "image" or "not reachable" in str(e):
                 raise  # Ollama being down is a whole-run problem, left to `--resume`
             last = e
+    if rec.kind == "image":  # last resort: the top and the bottom of the photo, one at a time
+        for v in tries:
+            try:
+                return transcribe_halves(rec, raw, work, v, env.cfg.ai.max_image_side)
+            except AIError as e:
+                if "not reachable" in str(e):
+                    raise
+                last = e
     note = f"photo {rec.original}: the model could not read it ({len(tries)} tries); marked [??]"
     state.notes.append(note)
     env.say(note)

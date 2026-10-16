@@ -10,6 +10,7 @@ from dsajudge.ai.base import LLM, Transcriber
 from dsajudge.ai.prompts import load_prompt
 from dsajudge.intake.codefence import fence_code
 from dsajudge.intake.sources import IntakeError, SourceRec
+from dsajudge.intake.stitch import drop_overlap
 
 FENCE = re.compile(r"```[ \t]*([\w+#-]*)[ \t]*\n(.*?)\n?```", re.DOTALL)
 UNREADABLE = "[??]"
@@ -39,6 +40,37 @@ def prepare_image(src: Path, out: Path, max_side: int) -> Path:
         out.parent.mkdir(parents=True, exist_ok=True)
         img.save(out, format="PNG")
     return out
+
+
+def image_halves(png: Path, overlap: float = 0.12) -> list[Path]:
+    """The top and the bottom of an image, overlapping by ``overlap`` of its height."""
+    from PIL import Image
+
+    out: list[Path] = []
+    with Image.open(png) as im:
+        h = im.height
+        for tag, (a, b) in (
+            ("top", (0.0, 0.5 + overlap / 2)),
+            ("bottom", (0.5 - overlap / 2, 1.0)),
+        ):
+            part = png.with_name(f"{png.stem}-{tag}.png")
+            im.crop((0, round(h * a), im.width, round(h * b))).save(part)
+            out.append(part)
+    return out
+
+
+def transcribe_halves(
+    rec: SourceRec, raw_dir: Path, work_dir: Path, vision: LLM, max_side: int
+) -> str:
+    """For a photo the model cannot read whole (it loops on long dense pages): read each half
+    on its own and join them, dropping the lines both halves show."""
+    png = prepare_image(raw_dir / rec.name, work_dir / (Path(rec.name).stem + ".png"), max_side)
+    system, user = load_prompt("transcribe_image").render()
+    top, bottom = (
+        vision.complete(user, system=system, images=[half]).strip() for half in image_halves(png)
+    )
+    joined, _ = drop_overlap(top, bottom)
+    return fence_code(f"{top}\n{joined}".strip())
 
 
 def transcribe_one(

@@ -190,7 +190,13 @@ def _robust(
             raise AIError(error)
         return f"text@{vision.level}"
 
+    def halves(rec: Any, raw: Any, work: Any, vision: _Rung, side: int) -> str:
+        if vision.level < needs_level:
+            raise AIError(error)
+        return f"halves@{vision.level}"
+
     cast(pytest.MonkeyPatch, monkeypatch).setattr(pipeline, "transcribe_one", fake)
+    cast(pytest.MonkeyPatch, monkeypatch).setattr(pipeline, "transcribe_halves", halves)
     env = pipeline.Env(cfg=Config(), providers=None, backend=None)  # type: ignore[arg-type]
     state = pipeline.State(key="k", mode="bundle")
     rec = SourceRec(n=1, name="1.jpg", original="1.jpg", kind="image", sha256="x")
@@ -208,8 +214,45 @@ def test_an_unreadable_photo_becomes_an_unreadable_page(monkeypatch: pytest.Monk
     assert out.startswith("[??]") and "marked [??]" in notes[0]
 
 
+def test_halves_are_tried_after_the_whole_photo_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from typing import Any, cast
+
+    from dsajudge.ai.base import AIError
+    from dsajudge.config import Config
+    from dsajudge.intake import pipeline
+    from dsajudge.intake.sources import SourceRec
+
+    def whole(*a: Any) -> str:
+        raise AIError("token repeat limit")
+
+    def halves(rec: Any, raw: Any, work: Any, vision: _Rung, side: int) -> str:
+        return "joined halves"
+
+    mp = cast(pytest.MonkeyPatch, monkeypatch)
+    mp.setattr(pipeline, "transcribe_one", whole)
+    mp.setattr(pipeline, "transcribe_halves", halves)
+    env = pipeline.Env(cfg=Config(), providers=None, backend=None)  # type: ignore[arg-type]
+    state = pipeline.State(key="k", mode="bundle")
+    rec = SourceRec(n=1, name="1.jpg", original="1.jpg", kind="image", sha256="x")
+    got = pipeline._transcribe_robust(env, state, rec, Path("."), Path("."), _Rung(), None)  # type: ignore[arg-type]
+    assert got == "joined halves" and state.notes == []
+
+
 def test_ollama_being_down_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
     from dsajudge.ai.base import AIError
 
     with pytest.raises(AIError, match="not reachable"):
         _robust(monkeypatch, needs_level=9, error="Ollama is not reachable at x")
+
+
+def test_image_halves_overlap_and_cover_the_photo(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from dsajudge.intake.transcribe import image_halves
+
+    png = tmp_path / "p.png"
+    Image.new("RGB", (100, 200), "white").save(png)
+    top, bottom = image_halves(png, overlap=0.1)
+    with Image.open(top) as t, Image.open(bottom) as b:
+        assert (t.width, b.width) == (100, 100)
+        assert t.height + b.height == 200 + 20  # the 10% overlap is counted twice
