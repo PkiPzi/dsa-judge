@@ -62,6 +62,7 @@ class Extraction(_M):
     samples: list[SampleOut] = Field(default_factory=list)
     checker: str = "exact"
     guarantees: list[str] = Field(default_factory=list)
+    editorial: str = ""
 
 
 class ConstraintsOut(_M):

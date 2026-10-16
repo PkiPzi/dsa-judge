@@ -9,7 +9,12 @@ look like code, and a run needs several code-looking lines.
 
 from __future__ import annotations
 
+import ast
 import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
 STARTS = re.compile(
     r"^\s*(#include|#define|using\s+namespace|class\s+\w+|public\s*:|private\s*:|protected\s*:"
@@ -85,3 +90,54 @@ def fence_code(text: str) -> str:
         pos = end
     out += lines[pos:]
     return "\n".join(out)
+
+
+NOT_PROSE = re.compile(r"[;{}=]|->|::")
+CPP_ERROR = re.compile(r"^<stdin>:(\d+):\d+: error")
+
+
+def _prose_like(line: str) -> bool:
+    s = line.strip()
+    return (
+        not s.startswith(("//", "#", "/*", "*"))
+        and len(re.findall(r"[A-Za-z]{2,}", s)) >= 2
+        and not NOT_PROSE.search(s)
+    )
+
+
+def _flagged(code: str, lang: str) -> set[int]:
+    """1-based lines the parser / compiler rejects (only the first, for python)."""
+    if lang == "python":
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            return {e.lineno} if e.lineno else set()
+        return set()
+    gpp = shutil.which("g++")
+    if lang != "cpp" or not gpp:
+        return set()
+    with tempfile.TemporaryDirectory() as d:
+        pre = Path(d) / "pre.h"
+        pre.write_text("#include <bits/stdc++.h>\nusing namespace std;\n")
+        r = subprocess.run(
+            [gpp, "-fsyntax-only", "-x", "c++", "-std=c++17", "-include", str(pre), "-"],
+            input=code, capture_output=True, text=True, timeout=30,
+        )  # fmt: skip
+    return {int(m.group(1)) for ln in r.stderr.splitlines() if (m := CPP_ERROR.match(ln))}
+
+
+def comment_prose(code: str, lang: str) -> str:
+    """Photographed solutions sometimes carry the author's explanation as bare lines, which
+    cannot compile. Comment out the lines the parser rejects that read like a sentence; anything
+    else is left alone (a real syntax error is for the reviewer). Only python and cpp."""
+    mark = "#" if lang == "python" else "//"
+    lines = code.split("\n")
+    for _ in range(40):
+        bad = {n for n in _flagged("\n".join(lines), lang) if 0 < n <= len(lines)}
+        bad = {n for n in bad if _prose_like(lines[n - 1])}
+        if not bad:
+            break
+        for n in bad:
+            ln = lines[n - 1]
+            lines[n - 1] = ln[: len(ln) - len(ln.lstrip())] + mark + " " + ln.strip()
+    return "\n".join(lines)

@@ -245,6 +245,7 @@ class Part(_Model):
     id: int
     title: str
     statement: str
+    editorial: str | None = None  # file with the solution's explanation
     mode: Literal["function", "stdio", "ops"] = "function"
     signature: Signature | None = None
     design: Design | None = None

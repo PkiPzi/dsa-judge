@@ -34,9 +34,13 @@ from dsajudge.ai.factory import ProviderFactory
 from dsajudge.ai.retry import ask_structured, extract_code
 from dsajudge.ai.schemas import CodeOut, Extraction, Segmentation
 from dsajudge.config import Config, dsa_home
-from dsajudge.gen.suite import gen_script
+from dsajudge.gen.manifest import stored_name
+from dsajudge.gen.plan import stress_plan
+from dsajudge.gen.suite import gen_script, load_part_gen
+from dsajudge.gen.values import GenError
 from dsajudge.intake import structure
 from dsajudge.intake.bundle import Group, drop_repeated_runs, group_pages, split_bundle
+from dsajudge.intake.codefence import comment_prose
 from dsajudge.intake.draft import (
     append_parts,
     examine,
@@ -59,14 +63,25 @@ from dsajudge.intake.transcribe import (
 )
 from dsajudge.judge.checkers import part_checker
 from dsajudge.judge.limits import MemoryBackend
-from dsajudge.judge.testset import OracleError, agree, run_source, sample_tests
+from dsajudge.judge.testset import (
+    JudgeTest,
+    OracleError,
+    agree,
+    run_source,
+    sample_tests,
+    write_input,
+)
 from dsajudge.lang import get_language
+from dsajudge.model.canon import args_to_text
+from dsajudge.model.constraints import ConstraintError
 from dsajudge.model.loader import ProblemError, append_ref, load_problem
 from dsajudge.model.schema import LANGS, Lang, Part, Problem, SourceFile
 from dsajudge.oracle.build import BuildError, BuildReport, build_part
 from dsajudge.store.bank import problems_dir
 
-STAGES = ("collect", "transcribe", "segment", "extract", "draft", "assist", "review", "build")
+STAGES = (
+    "collect", "transcribe", "segment", "extract", "draft", "samples", "assist", "review", "build",
+)  # fmt: skip
 FENCE_LANG = {
     "c++": "cpp",
     "cpp": "cpp",
@@ -213,7 +228,8 @@ def _segment(
 ) -> Segmentation:
     path = inbox / "segments.json"
     if path.exists():
-        return Segmentation.model_validate_json(path.read_text(encoding="utf-8"))
+        seg = Segmentation.model_validate_json(path.read_text(encoding="utf-8"))
+        return structure.attach_unlinked_code(seg, sections)
     env.say("splitting the transcript into parts")
     transcript = (inbox / "transcript.md").read_text(encoding="utf-8")
     seg = structure.segment(
@@ -223,6 +239,7 @@ def _segment(
         seg = structure.merge_false_followups(seg)
     if not seg.title:
         seg.title = state.title_hint
+    seg = structure.attach_unlinked_code(seg, sections)
     path.write_text(seg.model_dump_json(indent=1) + "\n", encoding="utf-8")
     return seg
 
@@ -232,6 +249,7 @@ class Extracted(BaseModel):
     constraints: dict[str, Any] = Field(default_factory=dict)
     constraints_error: str = ""
     constraints_note: str = ""  # a guess the tool made, for the reviewer
+    inferred: bool = False  # constraints came from the solution's code, not from the statement
 
 
 def _extract(
@@ -270,6 +288,14 @@ def _extract(
                 constraints = structure.fill_constraints(llm, ext, part_id, attempts)
             except AIError as e:
                 error = str(e)
+            inferred = False
+            if not constraints and refs:
+                # no usable constraints in the text: size them from the optimized solution
+                try:
+                    constraints = structure.infer_constraints(llm, ext, refs[-1], part_id, attempts)
+                    inferred, error = True, ""
+                except AIError as e:
+                    error += f"; from the solution: {e}"
             said = (ext.statement + " " + " ".join(ext.constraints_text)).lower()
             note = "; ".join(
                 f"'{name}' has no stated alphabet: assumed {structure.ASSUMED_CHARSET}"
@@ -277,11 +303,14 @@ def _extract(
                 if c.get("charset") == structure.ASSUMED_CHARSET
                 and structure.ASSUMED_CHARSET not in said
             )
+            if inferred:
+                note = "constraints were inferred from the solution's code, not the statement"
             got = Extracted(
                 extraction=ext,
                 constraints=constraints,
                 constraints_error=error,
                 constraints_note=note,
+                inferred=inferred,
             )
             path.write_text(got.model_dump_json(indent=1) + "\n", encoding="utf-8")
         out.append(got)
@@ -312,11 +341,18 @@ def _write_parts(
         stmt = f"part{pid}/statement.md"
         (stage / stmt).write_text(got.extraction.statement.strip() + "\n", encoding="utf-8")
         data = structure.part_data(got.extraction, got.constraints, pid, stmt)
+        if got.extraction.editorial.strip():
+            data["editorial"] = f"part{pid}/editorial.md"
+            (stage / data["editorial"]).write_text(
+                got.extraction.editorial.strip() + "\n", encoding="utf-8"
+            )
         refs: list[dict[str, Any]] = []
         for c in (c for c in seg.code if c.part == sp.part):
             rec = by_section[c.section]
             tag, code = code_blocks(sections[c.section])[c.block - 1]
             lang = rec.lang if rec.kind == "code" and rec.lang else _fence_lang(tag, c.lang)
+            if rec.kind in ("image", "audio"):
+                code = comment_prose(code, lang)
             ext = get_language(lang).ext
             if c.role == "brute":
                 rel = f"part{pid}/brute.{ext}"
@@ -333,6 +369,99 @@ def _write_parts(
         data["limits"] = {"time_ms": "auto", "memory_mb": 256}
         parts.append(data)
     return parts
+
+
+SAMPLES_WANTED = 3
+
+
+def _small_runs(
+    env: Env, stage: Path, problem: Problem, part: Part, src: SourceFile
+) -> tuple[list[dict[str, Any]], str]:
+    """Run the solution on small generated inputs: (samples, "") or ([], why it did not work)."""
+    try:
+        pg = load_part_gen(stage, part, env.cfg.plan, env.cfg.judge)
+        specs = stress_plan(problem.slug, part.id, 12)
+        inputs = pg.generator.generate_many(specs)
+        for errs in pg.validate_many(inputs):
+            if errs:
+                return [], f"the generator broke the constraints: {errs[0]}"
+        dest = stage.parent / "derive" / f"part{part.id}"
+        tests = [
+            JudgeTest(sp.id, "sample", write_input(dest, stored_name(sp.id), args))
+            for sp, args in zip(specs, inputs, strict=True)
+        ]
+        runs = run_source(
+            problem,
+            stage,
+            part,
+            src,
+            tests,
+            env.cfg.judge,
+            env.backend,
+            env.cfg.judge.ref_timeout_s,
+        )
+    except (ConstraintError, GenError, OracleError) as e:
+        return [], str(e)
+    for t in tests:
+        if runs[t.id].status != "ok":
+            return (
+                [],
+                f"the solution failed on {args_to_text(t.args())[:300]}: "
+                f"{runs[t.id].message.strip()[:300]}",
+            )
+    seen: dict[str, dict[str, Any]] = {}
+    for t in tests:
+        seen.setdefault(args_to_text(t.args()), {"args": t.args(), "expected": runs[t.id].output})
+    ordered = sorted(seen.items(), key=lambda kv: len(kv[0]))
+    return [v for _, v in ordered[len(ordered) // 3 :: max(1, len(ordered) // 4)]][
+        :SAMPLES_WANTED
+    ], ""
+
+
+def _derive_samples(
+    env: Env, stage: Path, first_part: int, extracted: dict[int, Extracted]
+) -> list[str]:
+    """A statement without examples gets some from the solution itself: small generated inputs,
+    the answers coming from running the (optimized) solution. If it crashes on inputs the
+    inferred constraints allow, the constraints are asked for again with that error."""
+    notes: list[str] = []
+    llm = env.providers.text(env.cfg)
+    attempts = env.cfg.ai.max_attempts
+    for pid in range(first_part, first_part + len(extracted)):
+        problem = load_problem(stage)
+        part = problem.parts[pid - 1]
+        srcs = part.refs or ([part.brute] if part.brute else [])
+        if part.samples or not srcs or part.mode == "ops":
+            continue
+        got = extracted[pid]
+        why = ""
+        for attempt in range(attempts):
+            samples, why = _small_runs(env, stage, problem, part, srcs[-1])
+            if samples or not got.inferred or attempt == attempts - 1:
+                break
+            try:
+                fresh = structure.infer_constraints(
+                    llm, got.extraction, code_of(stage, srcs[-1]), pid, attempts,
+                    feedback=f"\nWith your last constraints, {why}\nChange them so it works.",
+                )  # fmt: skip
+            except AIError:
+                break
+            update_part(stage, pid, constraints=fresh)
+            problem = load_problem(stage)
+            part = problem.parts[pid - 1]
+        if samples:
+            update_part(stage, pid, samples=samples)
+            notes.append(
+                f"part {pid}: no examples in the text; {len(samples)} were made by running the "
+                "solution on small generated inputs: they show what it does, not the statement"
+            )
+        else:
+            notes.append(f"part {pid}: could not make examples from the solution: {why}")
+    return notes
+
+
+def code_of(stage: Path, src: SourceFile) -> str:
+    return (stage / src.file).read_text(encoding="utf-8")
 
 
 def _assist(env: Env, stage: Path, state: State, first_part: int) -> list[str]:
@@ -576,6 +705,11 @@ def _run(
             if got.constraints_note
         ]
         _mark(inbox, state, "draft")
+    if "samples" not in state.done:
+        state.notes += _derive_samples(
+            env, stage, first_part, {first_part + i: e for i, e in enumerate(extracted)}
+        )
+        _mark(inbox, state, "samples")
     if "assist" not in state.done:
         state.notes += _assist(env, stage, state, first_part)
         _mark(inbox, state, "assist")

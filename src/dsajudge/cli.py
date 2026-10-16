@@ -13,6 +13,7 @@ from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape
 from rich.table import Table
 
@@ -665,6 +666,28 @@ def list_cmd(
                 progress = f"{len(solved & set(range(1, len(p.parts) + 1)))}/{len(p.parts)}"
             table.add_row(slug, escape(p.title), ", ".join(p.tags), progress)
     console.print(table)
+
+
+@app.command()
+def editorial(
+    slug: Annotated[
+        str | None,
+        typer.Argument(help="Default: the current work dir's", autocompletion=_slugs),
+    ] = None,
+    part: Annotated[int | None, typer.Option("--part", "-p", help="Default: every part")] = None,
+) -> None:
+    """The explanation that came with the solution (a spoiler: read it after you solve)."""
+    if slug is None:
+        slug = _here().slug
+    path, problem = _load(slug)
+    shown = 0
+    for p in problem.parts:
+        if (part is None or p.id == part) and p.editorial:
+            console.print(f"[bold]part {p.id}: {escape(p.title)}[/]")
+            console.print(Markdown((path / p.editorial).read_text(encoding="utf-8")))
+            shown += 1
+    if not shown:
+        console.print("[dim]no editorial for this problem[/]")
 
 
 @app.command()

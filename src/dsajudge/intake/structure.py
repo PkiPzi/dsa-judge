@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from dsajudge.ai.base import LLM, AIError
 from dsajudge.ai.retry import ask_structured
 from dsajudge.ai.schemas import (
+    CodeBlockRef,
     ConstraintsOut,
     Extraction,
     ParamOut,
@@ -23,11 +24,14 @@ from dsajudge.ai.schemas import (
     SegmentedPart,
 )
 from dsajudge.gen.validator import validate_args
+from dsajudge.intake.codefence import guess_lang
 from dsajudge.intake.transcribe import code_blocks
 from dsajudge.model.canon import dumps
 from dsajudge.model.constraints import ConstraintError, parse_constraints
 from dsajudge.model.schema import Part
 from dsajudge.model.types import parse_type
+
+FENCE_LANGS = {"c++": "cpp", "cpp": "cpp", "java": "java", "py": "python", "python": "python"}
 
 
 def segment(
@@ -55,6 +59,18 @@ def segment(
         attempts=attempts,
         check=check,
     )
+
+
+def attach_unlinked_code(seg: Segmentation, sections: dict[int, str]) -> Segmentation:
+    """The segmenter sometimes links no code at all. With a single part, every fenced block in
+    the transcript is then taken as a solution of it (the last one is the most optimized)."""
+    if seg.code or len(seg.parts) != 1:
+        return seg
+    for n, text in sorted(sections.items()):
+        for k, (tag, code) in enumerate(code_blocks(text), 1):
+            lang = FENCE_LANGS.get(tag.lower()) or guess_lang(code)
+            seg.code.append(CodeBlockRef(section=n, block=k, lang=lang, part=1))
+    return seg
 
 
 FOLLOWUP = re.compile(
@@ -486,3 +502,26 @@ def fill_constraints(llm: LLM, ext: Extraction, part_no: int, attempts: int) -> 
             return guess
         raise
     return out.constraints
+
+
+def infer_constraints(
+    llm: LLM, ext: Extraction, code: str, part_no: int, attempts: int, feedback: str = ""
+) -> dict[str, Any]:
+    """Constraints for a statement that gives none, sized from the optimized solution's code."""
+
+    def check(out: ConstraintsOut) -> str | None:
+        try:
+            parse_constraints(part_model(ext, out.constraints, part_no))
+        except (ConstraintError, ValidationError, ValueError) as e:
+            return str(e.message) if isinstance(e, ConstraintError) else str(e)
+        return None
+
+    return ask_structured(
+        llm,
+        "constraints_from_solution",
+        ConstraintsOut,
+        {"signature": signature_line(ext), "code": code.rstrip("\n"), "feedback": feedback},
+        attempts=attempts,
+        check=check,
+        feedback_var="feedback",
+    ).constraints
