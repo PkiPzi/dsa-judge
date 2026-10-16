@@ -67,7 +67,7 @@ def test_constraints_samples_and_editorial_come_from_the_solution(
             b - a for a, b in zip(sorted(s.args[0]), sorted(s.args[0])[1:], strict=False)
         )
     assert "# Sort then compare the neighbours" in (bank / part.refs[0].file).read_text()
-    assert (bank / part.editorial).read_text().strip() == EXPLANATION
+    assert " ".join((bank / part.editorial).read_text().split()) == EXPLANATION
     assert load_manifest(bank, 1)
     out = runner.invoke(app, ["editorial", "gap"]).output
     assert "smallest difference of neighbours" in out
@@ -278,3 +278,31 @@ def test_guidelines_are_copied_to_the_work_dir_but_the_editorial_is_not(
     work = dsa_home() / "work" / "min-stack" / "part1"
     assert (work / "guidelines.md").read_text() == "# how to approach it\n"
     assert not (work / "editorial.md").exists()
+
+
+def test_invented_examples_metadata_and_editorial_are_dropped() -> None:
+    from dsajudge.ai.schemas import SampleOut
+    from dsajudge.intake.structure import (
+        assumptions_from_text,
+        clean_statement,
+        grounded,
+        grounded_editorial,
+    )
+
+    text = "Count pairs in nums.\nExample: nums = [3, 5] gives 2.\nBackground\n- Values are positive.\n- Values are distinct.\n"
+    assert grounded(SampleOut(args=[[3, 5]], expected=2), text)
+    assert not grounded(SampleOut(args=[[10, 6, 8]], expected=4), text)
+    st = "Count pairs.\n\n**Examples:**\n- nums = [9] gives 1\n\n**Checker:** `exact`\n**Guarantees:** None\n**Editorial:**\n- we use a stack\n"
+    got = clean_statement(st, "Count pairs in nums.")
+    assert (
+        "Checker" not in got and "Guarantees" not in got and "stack" not in got and "9" not in got
+    )
+    assert (
+        clean_statement(st, text).count("nums = [9]") == 1
+    )  # the text has an example: its section stays
+    src = "Sort the array first and then scan it once to find the answer."
+    kept = grounded_editorial(
+        "Sort the array first and then scan it once. A heap makes it faster.", src
+    )
+    assert "Sort the array" in kept and "heap" not in kept
+    assert assumptions_from_text(text) == ["Values are positive.", "Values are distinct."]

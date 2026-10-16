@@ -281,7 +281,9 @@ def _extract(
                 and c.role == "ref"
                 and c.block <= len(code_blocks((sections or {}).get(c.section, "")))
             ]
-            ext = structure.extract_part(llm, part_id, sp.text, context, attempts, refs)
+            ext = structure.extract_part(
+                llm, part_id, sp.text, context, attempts, refs, "\n".join((sections or {}).values())
+            )
             ext.method = structure.method_from_code(ext.method, refs)
             constraints: dict[str, Any] = {}
             error = ""

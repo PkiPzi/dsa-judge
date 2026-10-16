@@ -458,6 +458,99 @@ def apply_code_signature(ext: Extraction, codes: list[str]) -> str | None:
     return None
 
 
+NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+META_LINE = re.compile(r"^\s*[#*_ ]*(checker|guarantees|editorial)\b", re.IGNORECASE)
+EXAMPLES_HEADING = re.compile(r"^\s*[#*_ ]*examples?\b", re.IGNORECASE)
+ASSUME_HEADING = re.compile(
+    r"^\s*[#*_ ]*(background|assumptions?|you can assume|let the candidate know they can assume)\b",
+    re.IGNORECASE,
+)
+BULLET = re.compile(r"^\s*(?:[-*\u2022\u25e6]|\d+[.)])\s+(.*\S)")
+
+
+def _leaves(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return [x for v in value for x in _leaves(v)]
+    return [value]
+
+
+def grounded(sample: Any, text: str) -> bool:
+    """Does every number and string of the sample appear in the source text? A model asked for the
+    examples of a text that has none writes plausible ones; those are never to be kept."""
+    numbers = set(NUMBER.findall(text))
+    for leaf in _leaves([sample.args, sample.expected]):
+        if isinstance(leaf, bool) or leaf is None:
+            continue
+        if isinstance(leaf, str):
+            if leaf not in text:
+                return False
+        elif str(leaf) not in numbers:
+            return False
+    return True
+
+
+def _drop_section(lines: list[str], start: re.Pattern[str]) -> list[str]:
+    """Remove each section that opens with a line matching ``start`` (up to the next heading)."""
+    out, skipping = [], False
+    for ln in lines:
+        heading = re.match(r"^\s*(?:#|\*\*)", ln) is not None
+        if start.match(ln):
+            skipping = True
+            continue
+        if skipping and heading:
+            skipping = False
+        if not skipping:
+            out.append(ln)
+    return out
+
+
+def clean_statement(statement: str, text: str) -> str:
+    """The statement as the question says it: no checker / guarantees / editorial lines (those have
+    their own fields) and no examples section when the source text shows no example."""
+    lines = _drop_section(statement.split("\n"), META_LINE)
+    if not EXAMPLE_WORDS.search(text):
+        lines = _drop_section(lines, EXAMPLES_HEADING)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() + "\n"
+
+
+def grounded_editorial(editorial: str, text: str) -> str:
+    """Keep only the sentences of the editorial that the source text really says: a model asked to
+    copy an explanation will happily write its own."""
+
+    def words(t: str) -> list[str]:
+        return re.findall(r"[a-z0-9]+", t.lower())
+
+    src = words(text)
+    grams = {tuple(src[i : i + 3]) for i in range(len(src) - 2)}
+    kept = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", editorial):
+        w = words(sentence)
+        tri = [tuple(w[i : i + 3]) for i in range(len(w) - 2)]
+        if tri and sum(g in grams for g in tri) / len(tri) >= 0.6:
+            kept.append(sentence.strip())
+    return "\n".join(kept)
+
+
+def assumptions_from_text(text: str) -> list[str]:
+    """The bullets under a "Background / you can assume" heading: they hold constraints (positive
+    heights, unique values, size ranges) that the statement itself does not repeat."""
+    out: list[str] = []
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if not ASSUME_HEADING.match(ln):
+            continue
+        for nxt in lines[i + 1 :]:
+            if not nxt.strip():
+                if out:
+                    break
+                continue
+            m = BULLET.match(nxt)
+            if not m:
+                break
+            out.append(m.group(1))
+    return out
+
+
 EXAMPLE_WORDS = re.compile(r"example|sample|input|output|e\.g\.|=>|->", re.IGNORECASE)
 
 
@@ -468,7 +561,12 @@ def extract_part(
     context: str,
     attempts: int,
     codes: list[str] | None = None,
+    source: str = "",
 ) -> Extraction:
+    """``source`` is everything the sources say (the editorial and the background may sit on other
+    pages than the part's text); it defaults to the part's text."""
+    source = source or text
+
     def check(ext: Extraction) -> str | None:
         for p in ext.params:
             p.type = normalize_type(p.type)
@@ -483,6 +581,7 @@ def extract_part(
             )
         if not EXAMPLE_WORDS.search(text):
             ext.samples = []  # the text has no examples: whatever the model listed is invented
+        ext.samples = [smp for smp in ext.samples if grounded(smp, text)]
         try:
             part_model(ext, {}, part_no)
         except (ValidationError, ValueError) as e:
@@ -494,7 +593,7 @@ def extract_part(
             return msg
         return None
 
-    return ask_structured(
+    ext = ask_structured(
         llm,
         "extract_part",
         Extraction,
@@ -502,6 +601,12 @@ def extract_part(
         attempts=attempts,
         check=check,
     )
+    ext.statement = clean_statement(ext.statement, text)
+    ext.editorial = grounded_editorial(ext.editorial, source)
+    ext.constraints_text += [
+        a for a in assumptions_from_text(source) if a not in ext.constraints_text
+    ]
+    return ext
 
 
 def signature_line(ext: Extraction) -> str:
