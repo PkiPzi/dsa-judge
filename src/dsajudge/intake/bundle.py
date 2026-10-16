@@ -258,6 +258,7 @@ def split_bundle(llm: LLM, sections: dict[int, str], attempts: int = 3) -> list[
             groups.append(Group(title=starts[b0], spans=[Span(section=n, start=b0 + 1, end=end)]))
     groups = _merge_fragments(groups, sections)
     groups = _merge_repeats(groups, sections)
+    groups = _merge_continuations(groups, sections)
     groups = _merge_codeless_forward(groups, sections)
     for i, g in enumerate(groups, 1):
         g.title = g.title or f"question {i}"
@@ -293,6 +294,29 @@ def _merge_codeless_forward(groups: list[Group], sections: dict[int, str]) -> li
             carry = None
         if not _has_code(g, sections) and i < len(groups) - 1:
             carry = g
+        else:
+            out.append(g)
+    return out
+
+
+CONTINUATION = re.compile(
+    r"^\W*(follow[- ]?up|look out|discuss|answer|hints?|notes?|helper|definition|approach"
+    r"|explanation|edge cases?|test cases?|examples?|solution|complexity|optimi[sz]ation)\b",
+    re.IGNORECASE,
+)
+
+
+def _merge_continuations(groups: list[Group], sections: dict[int, str]) -> list[Group]:
+    """A section of a question (its follow-up, the aspects to look out for, an answer, a
+    helper's definition) is headed like one, but it belongs to the question before it."""
+    out: list[Group] = []
+    for g in groups:
+        prose = _prose(g, sections)
+        heading = bool(CONTINUATION.match(g.title)) or bool(
+            prose and CONTINUATION.match(prose[0].strip())
+        )
+        if out and heading:
+            out[-1].spans += g.spans
         else:
             out.append(g)
     return out

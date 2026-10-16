@@ -276,3 +276,17 @@ def test_alike_openings_far_apart_are_different_questions() -> None:
     sentence = "Given two integers a and b, return their sum without using the plus operator."
     sections = {1: sentence + "\n" + CODE_A, 30: sentence + "\n" + CODE_B}
     assert len(split_bundle(Scripted({sentence: [sentence]}), sections)) == 2
+
+
+def test_a_follow_up_or_notes_section_belongs_to_the_question_before_it() -> None:
+    sections = {
+        1: STATEMENT_A + CODE_A,
+        2: "Follow-up: now the numbers can be negative as well.\nSay what changes in the code.\n"
+        + CODE_B,
+        3: STATEMENT_B + CODE_B,
+    }
+    groups = split_bundle(
+        Scripted({"Follow-up": ["Follow-up: now the numbers can be negative as well."]}), sections
+    )
+    assert [g.title for g in groups] == ["Problem A", "Problem B"]
+    assert {sp.section for sp in groups[0].spans} == {1, 2}
