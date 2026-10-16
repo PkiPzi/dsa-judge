@@ -189,3 +189,11 @@ def test_bare_python_functions_set_the_parameters() -> None:
     msg = apply_code_signature(ext(), [untyped])
     assert msg and "g(a, k)" in msg
     assert apply_code_signature(ext(), ["def g(a):\n    return a\n"]) is None
+
+
+def test_a_bare_label_line_is_commented_when_the_compiler_rejects_it() -> None:
+    cpp = "bfs - c++\nclass Solution {\npublic:\n    int f(int a) { return a; }\n};\n"
+    got = comment_prose(cpp, "cpp")
+    assert got.startswith("// bfs - c++\n")
+    ok = "class Solution {\npublic:\n    int f(int a) { return a; }\n};\n"
+    assert comment_prose(ok, "cpp") == ok

@@ -91,15 +91,18 @@ def fence_code(text: str) -> str:
     return "\n".join(out)
 
 
-NOT_PROSE = re.compile(r"[;{}=]|->|::")
+NOT_PROSE = re.compile(
+    r"[;{}=]|->|::|^(?:def|class|if|for|while|return|import|from|elif|else|try|except|with"
+    r"|int|long|void|bool|string|vector|auto|public|private)\b"
+)
 CPP_ERROR = re.compile(r"^<stdin>:(\d+):\d+: error")
 
 
 def _prose_like(line: str) -> bool:
     s = line.strip()
-    return (
+    return bool(
         not s.startswith(("//", "#", "/*", "*"))
-        and len(re.findall(r"[A-Za-z]{2,}", s)) >= 2
+        and re.search(r"[A-Za-z]{2,}", s)  # a label such as "bfs - c++" counts
         and not NOT_PROSE.search(s)
     )
 
