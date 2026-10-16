@@ -160,14 +160,21 @@ def method_from_code(current: str, codes: list[str]) -> str:
     """
     if any(re.search(rf"\b{re.escape(current)}\s*\(", c) for c in codes):
         return current
-    found = {
-        m.group(1)
-        for c in codes
-        for rx in METHOD_DEFS
-        for m in rx.finditer(c)
-        if m.group(1) not in NOT_METHODS and not m.group(1).startswith("__")
-    }
-    return found.pop() if len(found) == 1 else current
+    found = list(
+        dict.fromkeys(
+            m.group(1)
+            for c in codes
+            for rx in METHOD_DEFS
+            for m in rx.finditer(c)
+            if m.group(1) not in NOT_METHODS and not m.group(1).startswith("__")
+        )
+    )
+    if len(found) > 1:
+        # helpers are called by the solver: the one nobody calls is the entry point
+        text = "\n".join(codes)
+        roots = [n for n in found if len(re.findall(rf"\b{re.escape(n)}\s*\(", text)) <= 1]
+        found = roots if len(roots) == 1 else []
+    return found[0] if len(found) == 1 else current
 
 
 BOUND_LINE = re.compile(r"\s*(?:<=|<|\u2264)\s*")
