@@ -1043,7 +1043,10 @@ def _launch_editor(info: WorkInfo, sol: Path) -> None:
         return
     argv = shlex.split(editor)
     base = Path(argv[0]).name
-    args = [str(info.dir), str(sol)] if base in ("code", "codium", "code-oss") else [str(sol)]
+    docs = [str(d) for d in (info.dir / "statement.md", info.dir / "guidelines.md") if d.exists()]
+    args = (
+        [str(info.dir), *docs, str(sol)] if base in ("code", "codium", "code-oss") else [str(sol)]
+    )
     try:
         subprocess.run([*argv, *args], cwd=info.dir, check=False)
     except FileNotFoundError:

@@ -119,6 +119,8 @@ def open_part(
         sol.write_text(stub, encoding="utf-8")
 
     shutil.copyfile(problem_dir / part.statement, wd / "statement.md")
+    if part.guidelines:  # the editorial stays out of the work dir: it is a spoiler
+        shutil.copyfile(problem_dir / part.guidelines, wd / "guidelines.md")
 
     if part_id > 1:
         prev_src = part_dir(problem.slug, part_id - 1) / language.sol_filename

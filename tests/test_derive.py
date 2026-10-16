@@ -13,6 +13,7 @@ from dsajudge.ai import factory
 from dsajudge.ai.fake import FakeLLM, FakeTranscriber
 from dsajudge.ai.synth import render_text_image
 from dsajudge.cli import app
+from dsajudge.config import dsa_home
 from dsajudge.gen.manifest import load_manifest
 from dsajudge.intake.codefence import comment_prose
 from dsajudge.model.loader import load_problem
@@ -246,3 +247,34 @@ def test_cpp_64_bit_spellings_match_the_drivers() -> None:
 
     got = long_long("vector<int64_t> f(std::int64_t n, long k, long long m, long double d) {}")
     assert got == "vector<long long> f(long long n, long long k, long long m, long double d) {}"
+
+
+def test_guidelines_are_copied_to_the_work_dir_but_the_editorial_is_not(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    shutil.copytree(
+        Path(__file__).parent.parent / "fixtures" / "problems" / "min-stack",
+        problems_dir() / "min-stack",
+    )
+    d = problems_dir() / "min-stack"
+    (d / "part1" / "guidelines.md").write_text("# how to approach it\n")
+    (d / "part1" / "editorial.md").write_text("# spoiler\n")
+    y = (
+        (d / "problem.yaml")
+        .read_text()
+        .replace(
+            "    statement: part1/statement.md\n",
+            "    statement: part1/statement.md\n    guidelines: part1/guidelines.md\n"
+            "    editorial: part1/editorial.md\n",
+        )
+    )
+    (d / "problem.yaml").write_text(y)
+    monkeypatch.delenv("DSA_EDITOR", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
+    r = runner.invoke(app, ["open", "min-stack", "--no-editor"])
+    assert r.exit_code == 0, r.output
+    work = dsa_home() / "work" / "min-stack" / "part1"
+    assert (work / "guidelines.md").read_text() == "# how to approach it\n"
+    assert not (work / "editorial.md").exists()

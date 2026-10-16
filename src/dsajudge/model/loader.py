@@ -51,7 +51,8 @@ def load_problem(problem_dir: Path, *, check_files: bool = True) -> Problem:
     if check_files:
         missing: list[str] = []
         for part in problem.parts:
-            files = [part.statement, *([part.editorial] if part.editorial else [])]
+            files = [part.statement]
+            files += [f for f in (part.editorial, part.guidelines) if f]
             files += [r.file for r in part.refs]
             if part.brute:
                 files.append(part.brute.file)

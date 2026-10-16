@@ -246,6 +246,7 @@ class Part(_Model):
     title: str
     statement: str
     editorial: str | None = None  # file with the solution's explanation
+    guidelines: str | None = None  # file with how to approach it (hints, what is expected)
     mode: Literal["function", "stdio", "ops"] = "function"
     signature: Signature | None = None
     design: Design | None = None
