@@ -239,3 +239,10 @@ def test_the_named_function_gives_the_signature_among_helpers() -> None:
     )
     assert apply_code_signature(ext, [code]) is None
     assert [(p.name, p.type) for p in ext.params] == [("k", "int")] and ext.returns == "string"
+
+
+def test_cpp_64_bit_spellings_match_the_drivers() -> None:
+    from dsajudge.intake.wrap import long_long
+
+    got = long_long("vector<int64_t> f(std::int64_t n, long k, long long m, long double d) {}")
+    assert got == "vector<long long> f(long long n, long long k, long long m, long double d) {}"

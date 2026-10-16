@@ -33,7 +33,17 @@ def cut_main(code: str, lang: str) -> str:
     return code[: m.start()] + code[i:]
 
 
+def long_long(code: str) -> str:
+    """``int64_t`` and ``long`` are ``long`` here but the driver passes ``long long``: vectors of
+    one do not convert to the other, so the solution is spelled the driver's way."""
+    code = re.sub(r"\b(?:std::)?uint64_t\b", "unsigned long long", code)
+    code = re.sub(r"\b(?:std::)?int64_t\b", "long long", code)
+    return re.sub(r"\blong\b(?!\s+(?:long|double))", "long long", code)
+
+
 def wrap_solution(code: str, lang: str, method: str) -> str:
+    if lang == "cpp":
+        code = long_long(code)
     if HAS_SOLUTION.search(code):
         return code
     if lang == "python":
