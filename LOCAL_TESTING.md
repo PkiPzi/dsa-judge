@@ -141,6 +141,28 @@ dsa add statement.jpg voice-note.m4a solution.cpp --slug try-1
 dsa open try-1
 ```
 
+### Many questions in one go: `dsa bundle`
+
+A set of photos that holds several different questions (each with its statement and solution) is
+added with one command; `dsa add` is for one question.
+
+```zsh
+dsa bundle                          # a file dialog opens: select all the photos
+dsa bundle --name week1 --unattended *.jpeg
+```
+
+What it does: transcribes every photo (code is fenced even when the vision model forgets), drops
+repeated pages, asks the text model where each new question starts, then builds every question
+through the normal pipeline, one inbox per question (`week1-q01`, `week1-q02`, ...). A question
+that fails never stops the others; `dsa bundle --resume week1` redoes only what is not built.
+Photos named `x.jpeg`, `x (1).jpeg`, `x (2).jpeg` (WhatsApp) are taken in that order.
+
+`--unattended` skips the editor review but keeps the same gate: a draft is accepted only if it
+validates and has no `[??]` left; anything else stays pending for `dsa add --resume week1-q03`.
+Accepted drafts were **not checked by a human**, so skim them (`dsa show`, the statement) before
+trusting their hidden tests. Strings with no stated alphabet are assumed lowercase, and the
+problem's notes say so.
+
 ## 5. If something fails
 
 | Symptom | Fix |
