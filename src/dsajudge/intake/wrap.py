@@ -2,8 +2,8 @@
 ``Solution().method(...)``. This puts a thin ``Solution`` around the function the problem names,
 leaving the author's code untouched, so the same file runs as written.
 
-shortcut: a template, nested type or a method in a class that is not named Solution is left
-as it is, and the review catches it.
+shortcut: a template, or a method inside a class that is not named Solution, is not wrapped
+(the build fails and the review catches it).
 """
 
 from __future__ import annotations
@@ -37,9 +37,7 @@ def wrap_solution(code: str, lang: str, method: str) -> str:
     if HAS_SOLUTION.search(code):
         return code
     if lang == "python":
-        if re.search(
-            rf"^def\s+{re.escape(method)}\s*\(", code, re.MULTILINE
-        ) and not ANY_CLASS.search(code):
+        if re.search(rf"^def\s+{re.escape(method)}\s*\(", code, re.MULTILINE):
             return (
                 f"{code.rstrip()}\n\n\nclass Solution:\n"
                 f"    def {method}(self, *args):\n        return {method}(*args)\n"
@@ -52,7 +50,7 @@ def wrap_solution(code: str, lang: str, method: str) -> str:
         imports = [ln for ln in lines if ln.startswith("import ")]
         rest = [ln for ln in lines if not ln.startswith("import ")]
         return "\n".join([*imports, "class Solution {", *rest, "}"]) + "\n"
-    if lang != "cpp" or ANY_CLASS.search(cut_main(code, lang)):
+    if lang != "cpp":
         return code
     code = cut_main(code, lang)
     found = [m for m in SIG.finditer(code) if m.group("name") == method]

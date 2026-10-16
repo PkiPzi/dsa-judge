@@ -114,6 +114,29 @@ def _split_first_block(text: str) -> tuple[str, str, str] | None:
     return m.group(1).lower(), "\n".join(lines[first + 1 : close]), "\n".join(lines[close + 1 :])
 
 
+CONTINUES = re.compile(r"(?:return|else|elif|except|finally|break|continue)\b")
+
+
+def _reindent(head: str, prev_code: str) -> str:
+    """Indent the lines of ``head`` up to its first top-level def / class like the code above.
+
+    shortcut: one indent for the whole run; a continuation that dedents inside itself needs the
+    reviewer.
+    """
+    lines = prev_code.split("\n")
+    last = next((ln for ln in reversed(lines) if ln.strip()), "")
+    pad = last[: len(last) - len(last.lstrip())] + ("    " if last.rstrip().endswith(":") else "")
+    if head.lstrip().startswith("return"):  # a closing return sits at the function's top level
+        fn = next((ln for ln in reversed(lines) if ln.lstrip().startswith("def ")), None)
+        if fn is not None:
+            pad = fn[: len(fn) - len(fn.lstrip())] + "    "
+    out, inside = [], True
+    for ln in head.split("\n"):
+        inside = inside and not re.match(r"(?:def|class|import|from)\b", ln)
+        out.append(pad + ln if inside and ln.strip() else ln)
+    return "\n".join(out)
+
+
 def join_code(prev: str, cur: str) -> tuple[str, str, bool]:
     """Continue ``prev``'s final code block with ``cur``'s first one when ``prev`` looks cut off.
 
@@ -130,8 +153,14 @@ def join_code(prev: str, cur: str) -> tuple[str, str, bool]:
         return prev, cur, False
     first_line = next((ln for ln in head_code.split("\n") if ln.strip()), "")
     indented = first_line[:1] in (" ", "\t")
-    if not (block_is_open(lang, code) or (indented and lang in ("python", "py", ""))):
+    py = lang in ("python", "py", "")
+    # a statement that cannot start a module, with the photo's indentation lost: it continues
+    # the function above, so it takes the indentation of the line before it
+    dangling = py and not indented and CONTINUES.match(first_line) is not None
+    if not (block_is_open(lang, code) or (indented and py) or dangling):
         return prev, cur, False
+    if dangling:
+        head_code = _reindent(head_code, code)
     joined = f"{code.rstrip(chr(10))}\n{head_code.strip(chr(10))}"
     fence = lang or head_lang
     new_prev = (before + "\n" if before else "") + f"```{fence}\n{joined}\n```"

@@ -197,3 +197,26 @@ def test_a_bare_label_line_is_commented_when_the_compiler_rejects_it() -> None:
     assert got.startswith("// bfs - c++\n")
     ok = "class Solution {\npublic:\n    int f(int a) { return a; }\n};\n"
     assert comment_prose(ok, "cpp") == ok
+
+
+def test_a_dedented_continuation_joins_the_function_above() -> None:
+    from dsajudge.intake.stitch import join_code
+
+    prev = "text\n```python\ndef f(xs):\n    best = 0\n    for x in xs:\n        best = max(best, x)\n```"
+    cur = "```python\nreturn best\n\n\ndef g(a):\n    return a\n```"
+    new_prev, rest, joined = join_code(prev, cur)
+    assert joined and not rest.strip().startswith("```python\nreturn")
+    code = new_prev.split("```python\n")[1].split("\n```")[0]
+    compile(code, "x", "exec")
+    assert (
+        "\n    return best" in code and "        return best" not in code and "\ndef g(a):" in code
+    )
+
+
+def test_a_helper_class_does_not_stop_the_wrapper() -> None:
+    from dsajudge.intake.wrap import wrap_solution
+
+    py = "class Node:\n    pass\n\n\ndef f(a):\n    return a\n"
+    assert "class Solution:" in wrap_solution(py, "python", "f")
+    cpp = "struct Node { int v; };\nint f(int a) { return a; }\n"
+    assert "class Solution" in wrap_solution(cpp, "cpp", "f")
