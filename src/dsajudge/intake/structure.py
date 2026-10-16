@@ -316,9 +316,67 @@ def signature_from_code(code: str) -> tuple[str, list[tuple[str, str]], str] | N
     return m.group("name"), params, ret
 
 
+PY_DEF = re.compile(
+    r"^[ \t]*def[ \t]+(\w+)[ \t]*\([ \t]*self[ \t]*(?:,([^)]*))?\)"
+    r"[ \t]*(?:->[ \t]*([^:]+?))?[ \t]*:",
+    re.MULTILINE,
+)
+
+
+def python_signature(
+    code: str, prefer: str = ""
+) -> tuple[str, list[tuple[str, str | None]], str | None] | None:
+    """(method, [(param, annotation type or None)], return type or None) of the solution's
+    method; what the code does not state stays None. ``prefer`` names the wanted method when the
+    class has helpers; otherwise the first method is the answer."""
+    defs = [m for m in PY_DEF.finditer(code) if not m.group(1).startswith("__")]
+    if not defs:
+        return None
+    m = next((d for d in defs if d.group(1) == prefer), defs[0])
+    params: list[tuple[str, str | None]] = []
+    for raw in _split_params((m.group(2) or "").replace("[", "<").replace("]", ">")):
+        raw = raw.split("=")[0].strip()
+        if not raw:
+            continue
+        name, _, ann = raw.partition(":")
+        typ = (
+            normalize_type(ann.strip().replace("<", "[").replace(">", "]")) if ann.strip() else None
+        )
+        params.append((name.strip(), typ))
+    ret = m.group(3)
+    if ret is not None:
+        ret = "void" if ret.strip() == "None" else normalize_type(ret)
+    else:
+        body = code[m.end() :].split("\n    def ")[0]
+        if not re.search(r"^\s*return\s+\S", body, re.MULTILINE):
+            ret = "void"  # nothing is ever returned: it works in place
+    return m.group(1), params, ret
+
+
+def apply_python_signature(ext: Extraction, codes: list[str]) -> None:
+    for code in codes:
+        sig = python_signature(code, ext.method)
+        if sig is None:
+            continue
+        method, params, ret = sig
+        ext.method = method
+        if len(params) == len(ext.params):  # the model's names stay; the code's types win
+            for p, (_, typ) in zip(ext.params, params, strict=True):
+                if typ:
+                    p.type = typ
+        elif all(typ for _, typ in params):
+            ext.params = [ParamOut(name=n, type=str(typ)) for n, typ in params]
+        if ret:
+            ext.returns = ret
+            if ret != "void":
+                ext.output_param = None
+        return
+
+
 def apply_code_signature(ext: Extraction, codes: list[str]) -> None:
     """Make the extracted signature agree with the photographed solution (see above). The
     model's parameter names are kept when the count matches: the constraints use them."""
+    apply_python_signature(ext, [c for c in codes if PY_DEF.search(c)])
     for code in codes:
         sig = signature_from_code(code)
         if sig is None:

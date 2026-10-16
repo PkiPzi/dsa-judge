@@ -8,6 +8,7 @@ from dsajudge.intake.structure import (
     constraints_from_text,
     method_from_code,
     normalize_type,
+    python_signature,
     signature_from_code,
 )
 
@@ -110,3 +111,29 @@ def test_the_models_param_names_survive_the_code_signature() -> None:
     apply_code_signature(ext, [_cls("long long sumEven(vector<int>& a, int b)")])
     assert (ext.method, ext.returns) == ("sumEven", "long")
     assert [(p.name, p.type) for p in ext.params] == [("arr", "int[]"), ("kk", "int")]
+
+
+def test_python_signature_takes_what_the_code_states() -> None:
+    typed = "class Solution:\n    def f(self, nums: List[int], k: int) -> None:\n        pass"
+    assert python_signature(typed) == ("f", [("nums", "int[]"), ("k", "int")], "void")
+    bare = "class Solution:\n    def f(self, a, b):\n        return a + b"
+    assert python_signature(bare) == ("f", [("a", None), ("b", None)], None)
+    inplace = "class Solution:\n    def rot(self, a, k):\n        a.reverse()"
+    assert python_signature(inplace) == ("rot", [("a", None), ("k", None)], "void")
+    helpers = (
+        "class S:\n    def go(self, x):\n        return self.h(x)\n"
+        "    def h(self, x):\n        return x"
+    )
+    assert python_signature(helpers)[0] == "go"  # type: ignore[index]
+    assert python_signature(helpers, prefer="h")[0] == "h"  # type: ignore[index]
+
+
+def test_code_signature_fixes_python_extractions() -> None:
+    ext = _ext([("s", "string")], [])
+    ext.method, ext.returns = "countv", "string"
+    apply_code_signature(ext, [PY.replace("self, s", "self, s: str") + "\n        return 1"])
+    assert (ext.method, ext.returns) == ("countVowels", "string")  # no annotation, has a return
+    inplace = _ext([("a", "int[]")], [])
+    inplace.returns = "int"
+    apply_code_signature(inplace, ["class S:\n    def rot(self, a):\n        a.reverse()"])
+    assert (inplace.method, inplace.returns) == ("rot", "void")
