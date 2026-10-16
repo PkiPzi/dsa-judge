@@ -256,3 +256,15 @@ def test_image_halves_overlap_and_cover_the_photo(tmp_path: Path) -> None:
     with Image.open(top) as t, Image.open(bottom) as b:
         assert (t.width, b.width) == (100, 100)
         assert t.height + b.height == 200 + 20  # the 10% overlap is counted twice
+
+
+def test_a_group_without_code_is_joined_to_the_next_one() -> None:
+    sections = {1: STATEMENT_A, 2: STATEMENT_B + CODE_B}
+    groups = split_bundle(Scripted(), sections)
+    assert [g.title for g in groups] == ["Problem A"]  # A has no code: it is B's statement page
+    assert {sp.section for sp in groups[0].spans} == {1, 2}
+
+
+def test_a_trailing_group_without_code_stays_alone() -> None:
+    sections = {1: STATEMENT_A + CODE_A, 2: STATEMENT_B}
+    assert [g.title for g in split_bundle(Scripted(), sections)] == ["Problem A", "Problem B"]

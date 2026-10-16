@@ -257,6 +257,7 @@ def split_bundle(llm: LLM, sections: dict[int, str], attempts: int = 3) -> list[
             groups.append(Group(title=starts[b0], spans=[Span(section=n, start=b0 + 1, end=end)]))
     groups = _merge_fragments(groups, sections)
     groups = _merge_repeats(groups, sections)
+    groups = _merge_codeless_forward(groups, sections)
     for i, g in enumerate(groups, 1):
         g.title = g.title or f"question {i}"
     return groups
@@ -277,6 +278,22 @@ def _merge_fragments(groups: list[Group], sections: dict[int, str]) -> list[Grou
     if len(out) > 1 and _is_fragment(out[0], sections):
         out[1].spans = out[0].spans + out[1].spans
         out.pop(0)
+    return out
+
+
+def _merge_codeless_forward(groups: list[Group], sections: dict[int, str]) -> list[Group]:
+    """Every question comes with its solution, so a group with no code is a statement whose
+    solution is in the next group: join it to that one (the statement's title wins)."""
+    out: list[Group] = []
+    carry: Group | None = None
+    for i, g in enumerate(groups):
+        if carry:
+            g = Group(title=carry.title or g.title, spans=carry.spans + g.spans)
+            carry = None
+        if not _has_code(g, sections) and i < len(groups) - 1:
+            carry = g
+        else:
+            out.append(g)
     return out
 
 
