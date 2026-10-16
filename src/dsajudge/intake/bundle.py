@@ -22,7 +22,8 @@ OPEN_HEAD_LINES = 4  # statement lines of the open question shown to the model
 OPEN_TAIL_LINES = 3  # latest lines shown, so it can tell a finished question from a running one
 MIN_PROSE_CHARS = 40  # a group with less statement text than this is a fragment
 SAME_QUESTION = 0.9  # opening-line similarity above which two groups are the same question
-MIN_HEAD = 15  # shorter opening lines are never merged as repeats
+MIN_HEAD = 30  # shorter opening lines (headings, titles) are never merged as repeats
+REPEAT_WINDOW = 4  # a restated question shows up within this many photos of the original
 MIN_REPEAT_LINE = 30  # a prose line this long is dropped when it repeats inside a group
 SHINGLE = 3  # consecutive lines that must repeat for a run to count as a duplicate
 MIN_LONG_LINE = 20  # a repeated run needs at least two lines this long
@@ -315,13 +316,15 @@ def _same_question(a: list[str], b: list[str]) -> bool:
 
 
 def _merge_repeats(groups: list[Group], sections: dict[int, str]) -> list[Group]:
-    """A question photographed twice (or restated later) is one question."""
+    """A question photographed twice (or restated a page later) is one question."""
     out: list[Group] = []
     heads: list[list[str]] = []
     for g in groups:
         head = _openings(g, sections)
+        first = min(sp.section for sp in g.spans)
         for i, seen in enumerate(heads):
-            if _same_question(seen, head):
+            near = first - max(sp.section for sp in out[i].spans) <= REPEAT_WINDOW
+            if near and _same_question(seen, head):
                 out[i].spans += g.spans
                 break
         else:

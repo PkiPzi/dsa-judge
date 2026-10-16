@@ -268,3 +268,11 @@ def test_a_group_without_code_is_joined_to_the_next_one() -> None:
 def test_a_trailing_group_without_code_stays_alone() -> None:
     sections = {1: STATEMENT_A + CODE_A, 2: STATEMENT_B}
     assert [g.title for g in split_bundle(Scripted(), sections)] == ["Problem A", "Problem B"]
+
+
+def test_alike_openings_far_apart_are_different_questions() -> None:
+    """Only a restatement near the original is the same question; a recurring line 20 photos
+    later (a shared heading, a template) must not glue unrelated questions together."""
+    sentence = "Given two integers a and b, return their sum without using the plus operator."
+    sections = {1: sentence + "\n" + CODE_A, 30: sentence + "\n" + CODE_B}
+    assert len(split_bundle(Scripted({sentence: [sentence]}), sections)) == 2
