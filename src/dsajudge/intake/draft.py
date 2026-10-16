@@ -85,6 +85,12 @@ def with_header(text: str, header: list[str]) -> str:
     return "".join(block) + strip_header(text)
 
 
+def _one_line(text: str, limit: int = 400) -> str:
+    """Header lines are YAML comments: a message with line breaks would leave bare lines."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+
+
 @dataclass
 class Findings:
     checklist: list[str] = field(default_factory=list)
@@ -99,11 +105,11 @@ class Findings:
         ]
         if self.errors:
             out.append("MUST FIX before this can be built:")
-            out += [f"  ! {e}" for e in self.errors]
+            out += [f"  ! {_one_line(e)}" for e in self.errors]
             out.append("")
         if self.notes:
             out.append("Assistant notes:")
-            out += [f"  * {n}" for n in self.notes]
+            out += [f"  * {_one_line(n)}" for n in self.notes]
             out.append("")
         out += self.checklist
         return out

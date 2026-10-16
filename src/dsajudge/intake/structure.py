@@ -358,7 +358,7 @@ def signature_from_code(code: str) -> tuple[str, list[tuple[str, str]], str] | N
 
 
 PY_DEF = re.compile(
-    r"^[ \t]*def[ \t]+(\w+)[ \t]*\([ \t]*self[ \t]*(?:,([^)]*))?\)"
+    r"^[ \t]*def[ \t]+(\w+)[ \t]*\([ \t]*(?:self\b[ \t]*,?)?([^)]*)\)"
     r"[ \t]*(?:->[ \t]*([^:]+?))?[ \t]*:",
     re.MULTILINE,
 )
@@ -394,7 +394,9 @@ def python_signature(
     return m.group(1), params, ret
 
 
-def apply_python_signature(ext: Extraction, codes: list[str]) -> None:
+def apply_python_signature(ext: Extraction, codes: list[str]) -> str | None:
+    """Adopt the python solution's parameters; a message when its untyped parameter list does
+    not match the extracted one (the model is then asked again)."""
     for code in codes:
         sig = python_signature(code, ext.method)
         if sig is None:
@@ -407,17 +409,24 @@ def apply_python_signature(ext: Extraction, codes: list[str]) -> None:
                     p.type = typ
         elif all(typ for _, typ in params):
             ext.params = [ParamOut(name=n, type=str(typ)) for n, typ in params]
+        else:
+            return (
+                f"the solution defines {method}({', '.join(n for n, _ in params)}): list exactly "
+                "those parameters, in that order, each with its type"
+            )
         if ret:
             ext.returns = ret
             if ret != "void":
                 ext.output_param = None
-        return
+        return None
+    return None
 
 
-def apply_code_signature(ext: Extraction, codes: list[str]) -> None:
+def apply_code_signature(ext: Extraction, codes: list[str]) -> str | None:
     """Make the extracted signature agree with the photographed solution (see above). The
     model's parameter names are kept when the count matches: the constraints use them."""
-    apply_python_signature(ext, [c for c in codes if PY_DEF.search(c)])
+    if msg := apply_python_signature(ext, [c for c in codes if PY_DEF.search(c)]):
+        return msg
     for code in codes:
         sig = signature_from_code(code)
         if sig is None:
@@ -432,7 +441,8 @@ def apply_code_signature(ext: Extraction, codes: list[str]) -> None:
         ext.returns = ret
         if ret != "void":
             ext.output_param = None
-        return
+        return None
+    return None
 
 
 EXAMPLE_WORDS = re.compile(r"example|sample|input|output|e\.g\.|=>|->", re.IGNORECASE)
@@ -450,7 +460,8 @@ def extract_part(
         for p in ext.params:
             p.type = normalize_type(p.type)
         ext.returns = normalize_type(ext.returns)
-        apply_code_signature(ext, codes or [])
+        if msg := apply_code_signature(ext, codes or []):
+            return msg
         if ext.returns == "void" and not ext.output_param:
             # an in-place solution: the first array / list / tree parameter is what it changes
             ext.output_param = next(

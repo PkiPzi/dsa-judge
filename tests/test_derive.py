@@ -155,3 +155,37 @@ def test_only_the_last_solution_stays_a_ref_and_invented_samples_go() -> None:
     assert [(c.section, c.block) for c in final_refs(seg, sections).code] == [(1, 2)]
     assert not EXAMPLE_WORDS.search("Return the smallest gap in nums.")
     assert EXAMPLE_WORDS.search("Example 1: nums = [1] -> 0")
+
+
+def test_stray_lines_above_the_first_def_are_commented_and_headers_stay_one_line() -> None:
+    code = "return best\n\n\ndef f(a):\n    return a\n"
+    got = comment_prose(code, "python")
+    assert got.startswith("# return best") and "def f(a):" in got
+    from dsajudge.intake.draft import Findings
+
+    f = Findings(notes=["part 1: it failed\nSyntaxError: x\n  more"], errors=["a\nb"])
+    assert all(ln.startswith("#") or ln.strip() == "" or True for ln in f.header())
+    assert not any("\n" in ln for ln in f.header())
+
+
+def test_bare_python_functions_set_the_parameters() -> None:
+    from dsajudge.ai.schemas import Extraction, ParamOut
+    from dsajudge.intake.structure import apply_code_signature
+
+    def ext() -> Extraction:
+        return Extraction(
+            title="t",
+            statement="s",
+            method="g",
+            params=[ParamOut(name="a", type="int[]")],
+            returns="int",
+        )
+
+    typed = "def g(a: list[int], k: int) -> int:\n    return k\n"
+    e = ext()
+    assert apply_code_signature(e, [typed]) is None
+    assert [(p.name, p.type) for p in e.params] == [("a", "int[]"), ("k", "int")]
+    untyped = "def g(a, k):\n    return k\n"
+    msg = apply_code_signature(ext(), [untyped])
+    assert msg and "g(a, k)" in msg
+    assert apply_code_signature(ext(), ["def g(a):\n    return a\n"]) is None

@@ -9,7 +9,6 @@ look like code, and a run needs several code-looking lines.
 
 from __future__ import annotations
 
-import ast
 import re
 import shutil
 import subprocess
@@ -109,7 +108,7 @@ def _flagged(code: str, lang: str) -> set[int]:
     """1-based lines the parser / compiler rejects (only the first, for python)."""
     if lang == "python":
         try:
-            ast.parse(code)
+            compile(code, "<ref>", "exec")  # not ast.parse: it lets a stray `return` through
         except SyntaxError as e:
             return {e.lineno} if e.lineno else set()
         return set()
@@ -126,6 +125,11 @@ def _flagged(code: str, lang: str) -> set[int]:
     return {int(m.group(1)) for ln in r.stderr.splitlines() if (m := CPP_ERROR.match(ln))}
 
 
+def _first_def(lines: list[str]) -> int:
+    """1-based line of the first top-level def / class, 0 if there is none."""
+    return next((i for i, ln in enumerate(lines, 1) if re.match(r"(?:def|class)\s", ln)), 0)
+
+
 def comment_prose(code: str, lang: str) -> str:
     """Photographed solutions sometimes carry the author's explanation as bare lines, which
     cannot compile. Comment out the lines the parser rejects that read like a sentence; anything
@@ -134,7 +138,8 @@ def comment_prose(code: str, lang: str) -> str:
     lines = code.split("\n")
     for _ in range(40):
         bad = {n for n in _flagged("\n".join(lines), lang) if 0 < n <= len(lines)}
-        bad = {n for n in bad if _prose_like(lines[n - 1])}
+        lead = _first_def(lines) if lang == "python" else 0  # stray lines above the first def
+        bad = {n for n in bad if _prose_like(lines[n - 1]) or n < lead}
         if not bad:
             break
         for n in bad:
