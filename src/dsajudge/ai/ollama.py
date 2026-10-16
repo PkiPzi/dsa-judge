@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import urllib.error
 import urllib.request
@@ -50,7 +51,14 @@ class OllamaLLM:
         self.model = model
         self.timeout = timeout
         self.num_ctx = num_ctx
+        self.options: dict[str, Any] = {}
         self._client = client
+
+    def with_options(self, **options: Any) -> OllamaLLM:
+        """A copy that sends these sampling options too (e.g. temperature, repeat_penalty)."""
+        clone = copy.copy(self)
+        clone.options = {**self.options, **options}
+        return clone
 
     def _http(self) -> Any:
         if self._client is None:
@@ -81,7 +89,7 @@ class OllamaLLM:
             "messages": messages,
             "stream": False,
             "keep_alive": 0,
-            "options": {"temperature": 0, "num_ctx": self.num_ctx},
+            "options": {"temperature": 0, "num_ctx": self.num_ctx, **self.options},
         }
         if schema is not None:
             body["format"] = schema

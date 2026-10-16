@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from dsajudge.intake.bundle import drop_repeated_runs, group_pages, split_bundle
 from dsajudge.intake.sources import order_sources
 
@@ -161,3 +163,53 @@ def test_false_followups_are_merged_but_real_ones_survive() -> None:
 def test_empty_code_blocks_left_by_overlap_trimming_are_removed() -> None:
     sections = {1: "Count the islands in the grid.\n```cpp\n```\nConstraints: n <= 5\n"}
     assert "```" not in drop_repeated_runs(sections)[1]
+
+
+class _Rung:
+    """A vision stand-in whose sampling level rises with each with_options() rung."""
+
+    def __init__(self, level: int = 0) -> None:
+        self.level = level
+
+    def with_options(self, **options: object) -> _Rung:
+        return _Rung(1 if options.get("temperature") == 0.3 else 2)
+
+
+def _robust(
+    monkeypatch: object, needs_level: int, error: str = "token repeat limit"
+) -> tuple[str, list[str]]:
+    from typing import Any, cast
+
+    from dsajudge.ai.base import AIError
+    from dsajudge.config import Config
+    from dsajudge.intake import pipeline
+    from dsajudge.intake.sources import SourceRec
+
+    def fake(rec: Any, raw: Any, work: Any, vision: _Rung, audio: Any, side: int) -> str:
+        if vision.level < needs_level:
+            raise AIError(error)
+        return f"text@{vision.level}"
+
+    cast(pytest.MonkeyPatch, monkeypatch).setattr(pipeline, "transcribe_one", fake)
+    env = pipeline.Env(cfg=Config(), providers=None, backend=None)  # type: ignore[arg-type]
+    state = pipeline.State(key="k", mode="bundle")
+    rec = SourceRec(n=1, name="1.jpg", original="1.jpg", kind="image", sha256="x")
+    out = pipeline._transcribe_robust(env, state, rec, Path("."), Path("."), _Rung(), None)  # type: ignore[arg-type]
+    return out, state.notes
+
+
+def test_a_looping_photo_is_retried_with_other_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _robust(monkeypatch, needs_level=1) == ("text@1", [])
+    assert _robust(monkeypatch, needs_level=2) == ("text@2", [])
+
+
+def test_an_unreadable_photo_becomes_an_unreadable_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    out, notes = _robust(monkeypatch, needs_level=9)
+    assert out.startswith("[??]") and "marked [??]" in notes[0]
+
+
+def test_ollama_being_down_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dsajudge.ai.base import AIError
+
+    with pytest.raises(AIError, match="not reachable"):
+        _robust(monkeypatch, needs_level=9, error="Ollama is not reachable at x")

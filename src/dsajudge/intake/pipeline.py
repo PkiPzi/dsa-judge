@@ -29,7 +29,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from dsajudge.ai.assist import AssistContext, AssistFailed, write_brute, write_checker, write_gen
-from dsajudge.ai.base import AIError
+from dsajudge.ai.base import LLM, AIError, Transcriber
 from dsajudge.ai.factory import ProviderFactory
 from dsajudge.ai.retry import ask_structured, extract_code
 from dsajudge.ai.schemas import CodeOut, Extraction, Segmentation
@@ -50,6 +50,7 @@ from dsajudge.intake.review import Editor, ReviewAborted, review_loop, run_edito
 from dsajudge.intake.sources import IntakeError, SourceRec, classify, collect
 from dsajudge.intake.stitch import stitch_pages
 from dsajudge.intake.transcribe import (
+    UNREADABLE,
     assemble,
     code_blocks,
     parse_sections,
@@ -133,6 +134,43 @@ def _mark(inbox: Path, state: State, stage: str) -> None:
 # ---------------------------------------------------------------- stages
 
 
+# Retried in turn when the vision model fails on a photo (typically a repetition loop, which
+# at temperature 0 would repeat identically): some randomness and a repeat penalty.
+RETRY_SAMPLING = (
+    {"temperature": 0.3, "repeat_penalty": 1.1, "num_predict": 3000},
+    {"temperature": 0.7, "repeat_penalty": 1.2, "num_predict": 3000},
+)
+
+
+def _transcribe_robust(
+    env: Env,
+    state: State,
+    rec: SourceRec,
+    raw: Path,
+    work: Path,
+    vision: LLM,
+    audio: Transcriber,
+) -> str:
+    """transcribe_one, but a photo the model cannot read becomes an explicit [??] page instead
+    of aborting the whole run (the [??] keeps the unattended review from accepting it)."""
+    tries = [vision]
+    if rec.kind == "image" and hasattr(vision, "with_options"):
+        tries += [vision.with_options(**o) for o in RETRY_SAMPLING]
+    last: AIError | None = None
+    for v in tries:
+        try:
+            return transcribe_one(rec, raw, work, v, audio, env.cfg.ai.max_image_side)
+        except AIError as e:
+            if rec.kind != "image" or "not reachable" in str(e):
+                raise  # Ollama being down is a whole-run problem, left to `--resume`
+            last = e
+    note = f"photo {rec.original}: the model could not read it ({len(tries)} tries); marked [??]"
+    state.notes.append(note)
+    env.say(note)
+    assert last is not None
+    return f"{UNREADABLE} this photo could not be transcribed"
+
+
 def _transcribe(env: Env, inbox: Path, state: State) -> dict[int, str]:
     raw, work, tdir = inbox / "raw", inbox / "work", inbox / "transcripts"
     tdir.mkdir(exist_ok=True)
@@ -145,7 +183,7 @@ def _transcribe(env: Env, inbox: Path, state: State) -> dict[int, str]:
             sections[rec.n] = cached.read_text(encoding="utf-8")
             continue
         env.say(f"transcribing {rec.original} ({rec.kind})")
-        text = transcribe_one(rec, raw, work, vision, audio, env.cfg.ai.max_image_side)
+        text = _transcribe_robust(env, state, rec, raw, work, vision, audio)
         cached.write_text(text, encoding="utf-8")
         sections[rec.n] = text
     # Photos of one question: drop overlapping lines, join a code listing split across photos.
