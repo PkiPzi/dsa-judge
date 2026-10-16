@@ -130,7 +130,7 @@ def merge_false_followups(seg: Segmentation) -> Segmentation:
 
 _TYPE_TOKEN = r"[\w:<>,&*\[\]]+"
 METHOD_DEFS = (
-    re.compile(r"^[ \t]*def\s+(\w+)\s*\(\s*self\b", re.MULTILINE),  # python
+    re.compile(r"^[ \t]*def\s+(\w+)\s*\(", re.MULTILINE),  # python
     re.compile(  # c++ / java: "<modifiers> <type> name(args) {" (also const / throws)
         rf"^[ \t]*(?:(?:public|private|protected|static)\s+)*{_TYPE_TOKEN}(?:[ \t]+{_TYPE_TOKEN})*"
         r"[ \t]+[&*]?(\w+)\s*\([^;{}]*\)\s*(?:const\s*)?(?:throws\s+[\w, ]+)?\{",
@@ -173,7 +173,9 @@ def method_from_code(current: str, codes: list[str]) -> str:
         # helpers are called by the solver: the one nobody calls is the entry point
         text = "\n".join(codes)
         roots = [n for n in found if len(re.findall(rf"\b{re.escape(n)}\s*\(", text)) <= 1]
-        found = roots if len(roots) == 1 else []
+        # bare functions (no class around them): helpers come first, the solver is last
+        free = not re.search(r"\bclass\b", text)
+        found = roots if len(roots) == 1 else (found[-1:] if free else [])
     return found[0] if len(found) == 1 else current
 
 
