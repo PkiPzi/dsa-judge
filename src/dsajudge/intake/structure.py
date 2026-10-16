@@ -15,12 +15,19 @@ from pydantic import ValidationError
 
 from dsajudge.ai.base import LLM, AIError
 from dsajudge.ai.retry import ask_structured
-from dsajudge.ai.schemas import ConstraintsOut, Extraction, Segmentation, SegmentedPart
+from dsajudge.ai.schemas import (
+    ConstraintsOut,
+    Extraction,
+    ParamOut,
+    Segmentation,
+    SegmentedPart,
+)
 from dsajudge.gen.validator import validate_args
 from dsajudge.intake.transcribe import code_blocks
 from dsajudge.model.canon import dumps
 from dsajudge.model.constraints import ConstraintError, parse_constraints
 from dsajudge.model.schema import Part
+from dsajudge.model.types import parse_type
 
 
 def segment(
@@ -255,6 +262,78 @@ def normalize_type(text: str) -> str:
     base = {"listnode": "ListNode", "treenode": "TreeNode", "void": "void"}.get(low)
     base = base or SCALAR_ALIASES.get(low, low)
     return base + "[]" * depth
+
+
+SIG = re.compile(
+    r"^[ \t]*(?:(?:public|private|protected|static|final)\s+)*"
+    r"(?P<ret>[\w:<>,&*\[\]]+(?:[ \t]+[\w:<>,&*\[\]]+)*?)[ \t]+[&*]?(?P<name>\w+)\s*"
+    r"\((?P<params>[^;{}()]*)\)\s*(?:const\s*)?(?:throws\s+[\w, ]+)?\{",
+    re.MULTILINE,
+)
+
+
+def _split_params(text: str) -> list[str]:
+    """Split a parameter list on the commas that are not inside <...>."""
+    out, depth, cur = [], 0, ""
+    for ch in text:
+        depth += (ch == "<") - (ch == ">")
+        if ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur)
+    return out
+
+
+def signature_from_code(code: str) -> tuple[str, list[tuple[str, str]], str] | None:
+    """(method, [(param name, type)], return type) read off a C++ or Java solution's method
+    header, with every type mapped onto the tool's types; None when the code has no single
+    clear method or a type has no equivalent. Python has no types to read, so it is skipped."""
+    found = [
+        m
+        for m in SIG.finditer(code)
+        if m.group("name") not in NOT_METHODS and m.group("ret") not in NOT_METHODS
+    ]
+    if len(found) != 1:
+        return None
+    m = found[0]
+    ret = normalize_type(m.group("ret"))
+    params: list[tuple[str, str]] = []
+    for raw in _split_params(m.group("params")):
+        bits = re.sub(r"\bconst\b|\bfinal\b", "", raw).strip()
+        mm = re.fullmatch(r"(.+?)\s*[&*]?\s*(\w+)((?:\[\])*)", bits)
+        if not mm:
+            return None
+        params.append((mm.group(2), normalize_type(mm.group(1) + mm.group(3))))
+    try:
+        for _, typ in params:
+            parse_type(typ)
+        parse_type(ret, allow_void=True)
+    except ValueError:
+        return None
+    return m.group("name"), params, ret
+
+
+def apply_code_signature(ext: Extraction, codes: list[str]) -> None:
+    """Make the extracted signature agree with the photographed solution (see above). The
+    model's parameter names are kept when the count matches: the constraints use them."""
+    for code in codes:
+        sig = signature_from_code(code)
+        if sig is None:
+            continue
+        method, params, ret = sig
+        keep_names = len(params) == len(ext.params)
+        ext.method = method
+        ext.params = [
+            ParamOut(name=ext.params[i].name if keep_names else n, type=typ)
+            for i, (n, typ) in enumerate(params)
+        ]
+        ext.returns = ret
+        if ret != "void":
+            ext.output_param = None
+        return
 
 
 def extract_part(llm: LLM, part_no: int, text: str, context: str, attempts: int) -> Extraction:

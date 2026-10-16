@@ -263,6 +263,7 @@ def _extract(
                 and c.role == "ref"
                 and c.block <= len(code_blocks((sections or {}).get(c.section, "")))
             ]
+            structure.apply_code_signature(ext, refs)
             ext.method = structure.method_from_code(ext.method, refs)
             constraints: dict[str, Any] = {}
             error = ""

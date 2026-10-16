@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from dsajudge.ai.schemas import Extraction, ParamOut
-from dsajudge.intake.structure import constraints_from_text, method_from_code, normalize_type
+from dsajudge.intake.structure import (
+    apply_code_signature,
+    constraints_from_text,
+    method_from_code,
+    normalize_type,
+    signature_from_code,
+)
 
 CPP = (
     "class Solution {\npublic:\n    long long sumEven(vector<int>& nums) {\n"
@@ -76,3 +82,31 @@ def test_types_are_mapped_onto_the_tools_vocabulary() -> None:
     }  # fmt: skip
     for given, want in cases.items():
         assert normalize_type(given) == want, given
+
+
+def _cls(header: str, body: str = "return 0;") -> str:
+    return f"class Solution {{\npublic:\n    {header} {{\n        {body}\n    }}\n}};"
+
+
+def test_signature_is_read_off_the_cpp_and_java_method_header() -> None:
+    rotate = _cls("void rotate(vector<int>& nums, int k)", "k %= 3;")
+    assert signature_from_code(rotate) == ("rotate", [("nums", "int[]"), ("k", "int")], "void")
+    assert signature_from_code(CPP) == ("sumEven", [("nums", "int[]")], "long")
+    assert signature_from_code(JAVA) == ("maxElement", [("nums", "int[]")], "int")
+    grid = _cls("int f(vector<vector<char>>& g, string s)")
+    assert signature_from_code(grid) == ("f", [("g", "char[][]"), ("s", "string")], "int")
+
+
+def test_unreadable_or_ambiguous_signatures_give_none() -> None:
+    assert signature_from_code(PY) is None  # python has no types to read
+    two = _cls("int a(int x)") + "\n" + _cls("int b(int x)")
+    assert signature_from_code(two) is None
+    assert signature_from_code(_cls("int a(map<int, int>& m)")) is None
+
+
+def test_the_models_param_names_survive_the_code_signature() -> None:
+    ext = _ext([("arr", "string"), ("kk", "string")], [])
+    ext.method, ext.returns = "wrong", "string"
+    apply_code_signature(ext, [_cls("long long sumEven(vector<int>& a, int b)")])
+    assert (ext.method, ext.returns) == ("sumEven", "long")
+    assert [(p.name, p.type) for p in ext.params] == [("arr", "int[]"), ("kk", "int")]
