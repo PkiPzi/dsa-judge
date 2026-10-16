@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -23,7 +24,7 @@ from dsajudge import review as review_mod
 from dsajudge import stats as stats_mod
 from dsajudge.ai import factory as ai_factory
 from dsajudge.ai.base import AIError
-from dsajudge.config import Config, ConfigError, load_config
+from dsajudge.config import Config, ConfigError, dsa_home, load_config
 from dsajudge.doctor import run_checks
 from dsajudge.gen.manifest import load_disputes, load_manifest, part_tests_dir
 from dsajudge.intake import pipeline
@@ -674,11 +675,17 @@ def editorial(
         str | None,
         typer.Argument(help="Default: the current work dir's", autocompletion=_slugs),
     ] = None,
-    part: Annotated[int | None, typer.Option("--part", "-p", help="Default: every part")] = None,
+    part: Annotated[
+        int | None, typer.Option("--part", "-p", help="Default: this work dir's part, else all")
+    ] = None,
 ) -> None:
     """The explanation that came with the solution (a spoiler: read it after you solve)."""
     if slug is None:
-        slug = _here().slug
+        info = _here()
+        slug, part = (
+            info.slug,
+            part or info.part,
+        )  # stuck on a part: show that part's, not later ones
     path, problem = _load(slug)
     shown = 0
     for p in problem.parts:
@@ -1069,6 +1076,10 @@ def _open_for_practice(
             db.set_meta("privacy_note_shown", "1")
     sol = info.sol_path()
     pt = problem.part(part_id)
+    try:  # for the shell function that cds there (a program cannot change its parent's directory)
+        (dsa_home() / ".last-open").write_text(str(info.dir), encoding="utf-8")
+    except OSError:
+        pass
     console.print(f"[bold]{escape(problem.title)}[/] · part {part_id}: {escape(pt.title)}")
     console.print(f"  cd {info.dir}")
     console.print(f"  edit {sol.name}, then `dsa run` / `dsa submit`")
@@ -1162,6 +1173,9 @@ def submit(
         bool, typer.Option("--all", help="Run every test instead of stopping at the first failure")
     ] = False,
     lang: LangOpt = None,
+    open_next: Annotated[
+        bool, typer.Option("--open/--no-open", help="After an AC, open the part it unlocks")
+    ] = True,
 ) -> None:
     """Judge against the full hidden suite."""
     cfg = _config()
@@ -1196,6 +1210,8 @@ def submit(
                 f"[green]part {nxt} unlocked:[/] dsa open {target.problem.slug}"
                 + (f" --lang {target.lang}" if target.lang != cfg.default_lang else "")
             )
+            if open_next and sys.stdout.isatty():
+                _open_for_practice(cfg, target.problem.slug, nxt, target.lang)
         else:
             console.print(f"[green]all parts of {target.problem.slug} solved[/]")
     raise typer.Exit(0 if report.verdict == Verdict.AC else 1)
