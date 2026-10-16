@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dsajudge.ai.schemas import Extraction, ParamOut
-from dsajudge.intake.structure import constraints_from_text, method_from_code
+from dsajudge.intake.structure import constraints_from_text, method_from_code, normalize_type
 
 CPP = (
     "class Solution {\npublic:\n    long long sumEven(vector<int>& nums) {\n"
@@ -64,3 +64,15 @@ def test_string_constraints_need_a_charset_from_the_wording() -> None:
 def test_anything_unreadable_gives_none() -> None:
     assert constraints_from_text(_ext([("nums", "int[]")], ["1 <= nums.length <= 10^5"])) is None
     assert constraints_from_text(_ext([("g", "int[][]")], ["1 <= g.length <= 5"])) is None
+
+
+def test_types_are_mapped_onto_the_tools_vocabulary() -> None:
+    cases = {
+        "vector<int>": "int[]", "vector<vector<int>>": "int[][]", "List[int]": "int[]",
+        "List<Integer>": "int[]", "int[]": "int[]", "String": "string", "str": "string",
+        "ListNode*": "ListNode", "Optional[TreeNode]": "TreeNode", "boolean": "bool",
+        "long long": "long", "vector<string>&": "string[]", "char[][]": "char[][]",
+        "float": "double", "void": "void", "weird<thing>": "weird<thing>",
+    }  # fmt: skip
+    for given, want in cases.items():
+        assert normalize_type(given) == want, given

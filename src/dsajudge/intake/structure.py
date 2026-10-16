@@ -231,8 +231,42 @@ def _pydantic_message(e: ValidationError) -> str:
     )
 
 
+SCALAR_ALIASES = {
+    "integer": "int", "int32": "int", "int32_t": "int", "short": "int", "uint": "int",
+    "longlong": "long", "int64": "long", "int64_t": "long", "ll": "long",
+    "float": "double", "boolean": "bool", "str": "string", "character": "char",
+}  # fmt: skip
+CONTAINER = re.compile(r"(?:vector|list|arraylist|array|sequence)\s*[<\[](.*)[>\]]", re.IGNORECASE)
+
+
+def normalize_type(text: str) -> str:
+    """Map the C++/Java/Python spelling of a type onto this tool's (``vector<int>``,
+    ``List[int]``, ``String``, ``ListNode*``, ``Integer[]`` ...); unknown text is returned
+    unchanged so the validator reports it."""
+    s = re.sub(r"\bOptional\[(.*)\]", r"\1", text.strip())
+    s = re.sub(r"\bconst\b|std::|[*&]", "", s).strip()
+    depth = 0
+    while True:
+        if (m := CONTAINER.fullmatch(s)) or (m := re.fullmatch(r"(.*)\[\]", s)):
+            s, depth = m.group(1).strip(), depth + 1
+        else:
+            break
+    low = s.replace(" ", "").lower()
+    base = {"listnode": "ListNode", "treenode": "TreeNode", "void": "void"}.get(low)
+    base = base or SCALAR_ALIASES.get(low, low)
+    return base + "[]" * depth
+
+
 def extract_part(llm: LLM, part_no: int, text: str, context: str, attempts: int) -> Extraction:
     def check(ext: Extraction) -> str | None:
+        for p in ext.params:
+            p.type = normalize_type(p.type)
+        ext.returns = normalize_type(ext.returns)
+        if ext.returns == "void" and not ext.output_param:
+            # an in-place solution: the first array / list / tree parameter is what it changes
+            ext.output_param = next(
+                (p.name for p in ext.params if p.type.endswith("]") or p.type[0].isupper()), None
+            )
         try:
             part_model(ext, {}, part_no)
         except ValidationError as e:
