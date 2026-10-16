@@ -220,3 +220,22 @@ def test_a_helper_class_does_not_stop_the_wrapper() -> None:
     assert "class Solution:" in wrap_solution(py, "python", "f")
     cpp = "struct Node { int v; };\nint f(int a) { return a; }\n"
     assert "class Solution" in wrap_solution(cpp, "cpp", "f")
+
+
+def test_the_named_function_gives_the_signature_among_helpers() -> None:
+    from dsajudge.ai.schemas import Extraction, ParamOut
+    from dsajudge.intake.structure import apply_code_signature, extract_part  # noqa: F401
+
+    code = (
+        "bool isPrime(int x) {\n    return x > 1;\n}\n"
+        'string solve(int n) {\n    return isPrime(n) ? "y" : "n";\n}\n'
+    )
+    ext = Extraction(
+        title="t",
+        statement="s",
+        method="solve",
+        params=[ParamOut(name="k", type="long")],
+        returns="int",
+    )
+    assert apply_code_signature(ext, [code]) is None
+    assert [(p.name, p.type) for p in ext.params] == [("k", "int")] and ext.returns == "string"

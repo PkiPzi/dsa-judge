@@ -337,7 +337,9 @@ def _split_params(text: str) -> list[str]:
     return out
 
 
-def signature_from_code(code: str) -> tuple[str, list[tuple[str, str]], str] | None:
+def signature_from_code(
+    code: str, prefer: str = ""
+) -> tuple[str, list[tuple[str, str]], str] | None:
     """(method, [(param name, type)], return type) read off a C++ or Java solution's method
     header, with every type mapped onto the tool's types; None when the code has no single
     clear method or a type has no equivalent. Python has no types to read, so it is skipped."""
@@ -346,6 +348,8 @@ def signature_from_code(code: str) -> tuple[str, list[tuple[str, str]], str] | N
         for m in SIG.finditer(code)
         if m.group("name") not in NOT_METHODS and m.group("ret") not in NOT_METHODS
     ]
+    if len(found) > 1:  # helpers around the solver: take the one the problem names
+        found = [m for m in found if m.group("name") == prefer]
     if len(found) != 1:
         return None
     m = found[0]
@@ -437,7 +441,7 @@ def apply_code_signature(ext: Extraction, codes: list[str]) -> str | None:
     if msg := apply_python_signature(ext, [c for c in codes if PY_DEF.search(c)]):
         return msg
     for code in codes:
-        sig = signature_from_code(code)
+        sig = signature_from_code(code, ext.method)
         if sig is None:
             continue
         method, params, ret = sig
@@ -469,6 +473,7 @@ def extract_part(
         for p in ext.params:
             p.type = normalize_type(p.type)
         ext.returns = normalize_type(ext.returns)
+        ext.method = method_from_code(ext.method, codes or [])
         if msg := apply_code_signature(ext, codes or []):
             return msg
         if ext.returns == "void" and not ext.output_param:
