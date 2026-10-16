@@ -333,3 +333,16 @@ def test_schemas_are_self_contained() -> None:
     assert "title" in json_schema(Extraction)["properties"]
     assert "title" in json_schema(Extraction)["required"]
     assert json_schema(Segmentation)["properties"]["parts"]["minItems"] == 1
+
+
+def test_json_calls_are_capped_and_retries_use_other_sampling() -> None:
+    from dsajudge.ai.ollama import SCHEMA_MAX_TOKENS, OllamaLLM
+
+    llm = OllamaLLM("http://127.0.0.1:11434", "m")
+    plain = llm.request_body("p", None, None, None)["options"]
+    json_call = llm.request_body("p", None, {"type": "object"}, None)["options"]
+    assert "num_predict" not in plain and json_call["num_predict"] == SCHEMA_MAX_TOKENS
+    retry = llm.with_options(temperature=0.3, repeat_penalty=1.1)
+    opts = retry.request_body("p", None, {"type": "object"}, None)["options"]
+    assert opts["temperature"] == 0.3 and opts["repeat_penalty"] == 1.1
+    assert llm.options == {}  # the original client is untouched

@@ -13,6 +13,8 @@ from typing import Any
 from dsajudge.ai.base import AIError
 from dsajudge.ai.net import ensure_loopback
 
+SCHEMA_MAX_TOKENS = 3000
+
 
 def ping(base_url: str, timeout: float = 1.0) -> str | None:
     """Return the Ollama version if it answers on ``base_url``, else None.
@@ -93,6 +95,9 @@ class OllamaLLM:
         }
         if schema is not None:
             body["format"] = schema
+            # a JSON answer is short; a model stuck repeating itself would otherwise run to the
+            # context limit (or the timeout) instead of failing fast and being retried
+            body["options"] = {"num_predict": SCHEMA_MAX_TOKENS, **body["options"]}
         return body
 
     def complete(

@@ -67,7 +67,12 @@ def ask_structured(
         system, user = prompt.render(**vals)
         if feedback and not feedback_var:
             user += feedback
-        reply = llm.complete(user, system=system, schema=schema)
+        # at temperature 0 a retry repeats the same answer (or the same repetition loop): from
+        # the second attempt on, add some randomness and a repeat penalty when the client can
+        asker = llm
+        if feedback and hasattr(llm, "with_options"):
+            asker = llm.with_options(temperature=0.3, repeat_penalty=1.1)
+        reply = asker.complete(user, system=system, schema=schema)
         try:
             obj = model.model_validate(json.loads(extract_json(reply)))
         except (ValueError, ValidationError) as e:
