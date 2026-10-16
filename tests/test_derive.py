@@ -193,9 +193,9 @@ def test_bare_python_functions_set_the_parameters() -> None:
 
 
 def test_a_bare_label_line_is_commented_when_the_compiler_rejects_it() -> None:
-    cpp = "bfs - c++\nclass Solution {\npublic:\n    int f(int a) { return a; }\n};\n"
+    cpp = "approach 2 - c++\nclass Solution {\npublic:\n    int f(int a) { return a; }\n};\n"
     got = comment_prose(cpp, "cpp")
-    assert got.startswith("// bfs - c++\n")
+    assert got.startswith("// approach 2 - c++\n")
     ok = "class Solution {\npublic:\n    int f(int a) { return a; }\n};\n"
     assert comment_prose(ok, "cpp") == ok
 

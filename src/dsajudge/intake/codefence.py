@@ -102,7 +102,7 @@ def _prose_like(line: str) -> bool:
     s = line.strip()
     return bool(
         not s.startswith(("//", "#", "/*", "*"))
-        and re.search(r"[A-Za-z]{2,}", s)  # a label such as "bfs - c++" counts
+        and re.search(r"[A-Za-z]{2,}", s)  # a label such as "approach 2 - c++" counts
         and not NOT_PROSE.search(s)
     )
 
