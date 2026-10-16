@@ -548,6 +548,8 @@ def bundle(
     """Add every question in a bundle of photos (statements and solutions together)."""
     cfg = _config()
     env = _intake_env(cfg)
+    if unattended:  # nobody to ask: a model-proposed fix counts only if it then passes the samples
+        env.confirm = lambda _q: True
     paths = _files_or_pick(files, bool(resume))
     items = _intake_call(
         lambda: pipeline.bundle(env, name=name, files=paths, resume=resume, unattended=unattended)

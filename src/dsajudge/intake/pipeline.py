@@ -88,6 +88,7 @@ class Env:
     say: Callable[[str], None] = lambda _m: None
     edit: Editor = run_editor
     confirm: Callable[[str], bool] = lambda _q: False
+    fixes: list[str] = field(default_factory=list)  # solutions whose OCR slips the model fixed
 
 
 class State(BaseModel):
@@ -452,6 +453,7 @@ def fix_transcribed(
                 f"fix for {src.file} declined; edit the draft yourself and run dsa add --resume"
             )
         path.write_text(new, encoding="utf-8")
+        env.fixes.append(src.file)
         problem_text = check_source(env, problem_dir, problem, part, src)
 
 
@@ -738,6 +740,7 @@ def bundle(
             pages=sorted({names[sp.section] for sp in g.spans}),
         )
         started = time.monotonic()
+        fixes_before = len(env.fixes)
         try:
             sub = _bundle_inbox(inbox, state, sections, g, key)
             sub_state = load_state(sub)
@@ -753,6 +756,8 @@ def bundle(
                     item.status = "built"
         except Exception as e:  # one bad question must not stop the rest of the bundle
             item.status, item.detail = "failed", f"{type(e).__name__}: {str(e)[:400]}"
+        if item.status == "built" and len(env.fixes) > fixes_before:
+            item.detail = "the model fixed OCR slips in: " + ", ".join(env.fixes[fixes_before:])
         item.seconds = round(time.monotonic() - started, 1)
         items.append(item)
         (inbox / "bundle.json").write_text(
