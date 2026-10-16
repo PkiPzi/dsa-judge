@@ -336,11 +336,19 @@ def apply_code_signature(ext: Extraction, codes: list[str]) -> None:
         return
 
 
-def extract_part(llm: LLM, part_no: int, text: str, context: str, attempts: int) -> Extraction:
+def extract_part(
+    llm: LLM,
+    part_no: int,
+    text: str,
+    context: str,
+    attempts: int,
+    codes: list[str] | None = None,
+) -> Extraction:
     def check(ext: Extraction) -> str | None:
         for p in ext.params:
             p.type = normalize_type(p.type)
         ext.returns = normalize_type(ext.returns)
+        apply_code_signature(ext, codes or [])
         if ext.returns == "void" and not ext.output_param:
             # an in-place solution: the first array / list / tree parameter is what it changes
             ext.output_param = next(

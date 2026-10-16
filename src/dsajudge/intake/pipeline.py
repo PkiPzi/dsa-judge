@@ -255,7 +255,6 @@ def _extract(
             part_id = base_part + sp.part
             env.say(f"extracting part {part_id}")
             context = structure.follow_up_context(*prev) if prev else ""
-            ext = structure.extract_part(llm, part_id, sp.text, context, attempts)
             refs = [
                 code_blocks((sections or {}).get(c.section, ""))[c.block - 1][1]
                 for c in seg.code
@@ -263,7 +262,7 @@ def _extract(
                 and c.role == "ref"
                 and c.block <= len(code_blocks((sections or {}).get(c.section, "")))
             ]
-            structure.apply_code_signature(ext, refs)
+            ext = structure.extract_part(llm, part_id, sp.text, context, attempts, refs)
             ext.method = structure.method_from_code(ext.method, refs)
             constraints: dict[str, Any] = {}
             error = ""
